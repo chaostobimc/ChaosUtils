@@ -240,7 +240,7 @@ public final class ChatHistory implements Feature {
 						Component.literal("§8[ChaosUtils] §7previous message repeated §f" + count + "×"), false);
 			}
 		}
-		if (Keybinds.chatHistory != null && Keybinds.chatHistory.wasPressed() && client.player != null) {
+		if (Keybinds.chatHistory != null && Keybinds.chatHistory.consumeClick() && client.player != null) {
 			client.setScreen(new dev.chaosutils.gui.ChaosScreens.ChatHistoryScreen(client.screen));
 		}
 	}

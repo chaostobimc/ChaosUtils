@@ -124,8 +124,8 @@ public final class CrosshairDesigner implements Feature {
 		if (selected == 5) {
 			return;
 		}
-		float centerX = graphics.getScaledWindowWidth() * 0.5F;
-		float centerY = graphics.getScaledWindowHeight() * 0.5F;
+		float centerX = graphics.guiWidth() * 0.5F;
+		float centerY = graphics.guiHeight() * 0.5F;
 
 		float targetSpread = 0.0F;
 		if (spread.get()) {

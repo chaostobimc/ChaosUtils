@@ -7,6 +7,7 @@ import dev.chaosutils.config.Setting;
 import dev.chaosutils.core.Keybinds;
 import dev.chaosutils.core.TickClock;
 import dev.chaosutils.feature.Feature;
+import dev.chaosutils.mixin.CameraAccessor;
 import dev.chaosutils.util.Anim;
 import net.minecraft.client.Camera;
 import net.minecraft.client.CameraType;
@@ -98,9 +99,9 @@ public final class PerspectiveLock implements Feature {
 			deactivate(client);
 			return;
 		}
-		boolean pressed = Keybinds.freeLook != null && Keybinds.freeLook.isPressed();
+		boolean pressed = Keybinds.freeLook != null && Keybinds.freeLook.isDown();
 		if (toggleMode.get()) {
-			if (pressed && Keybinds.freeLook.wasPressed()) {
+			if (pressed && Keybinds.freeLook.consumeClick()) {
 				if (active) {
 					deactivate(client);
 				} else {
@@ -193,17 +194,17 @@ public final class PerspectiveLock implements Feature {
 		Mode selected = selectedMode();
 		if (!initialised) {
 			initialised = true;
-			renderedYaw = camera.getYRot();
-			renderedPitch = camera.getXRot();
+			renderedYaw = camera.yRot();
+			renderedPitch = camera.xRot();
 		}
 		float targetYaw = lockedYaw;
 		// "Yaw locked, free pitch" keeps the vertical look free for a natural preview.
-		float targetPitch = selected == Mode.YAW_LOCK ? camera.getXRot() : lockedPitch;
+		float targetPitch = selected == Mode.YAW_LOCK ? camera.xRot() : lockedPitch;
 		float speed = rememberRotation.get() ? transitionSpeed.getFloat() : 30.0F;
 		float delta = TickClock.frameDelta();
 		renderedYaw = approachWrapped(renderedYaw, targetYaw, speed, delta);
 		renderedPitch = Anim.approach(renderedPitch, targetPitch, speed, delta);
-		camera.setRotation(renderedYaw, renderedPitch);
+		((CameraAccessor) camera).chaosutils$setRotation(renderedYaw, renderedPitch);
 	}
 
 	private static float approachWrapped(float current, float target, float speed, float deltaSeconds) {

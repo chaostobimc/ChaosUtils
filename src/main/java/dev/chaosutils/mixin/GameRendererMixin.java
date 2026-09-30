@@ -19,12 +19,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(GameRenderer.class)
 public class GameRendererMixin {
 	@Inject(method = "getFov", at = @At("RETURN"), cancellable = true, require = 0)
-	private void chaosutils$zoomFov(Camera camera, float partialTick, boolean useFovSetting, CallbackInfoReturnable<Double> info) {
+	private void chaosutils$zoomFov(Camera camera, float partialTick, boolean useFovSetting, CallbackInfoReturnable<Float> info) {
 		ApiCompat.seen("renderer.fov");
 		try {
 			double factor = SmoothZoom.fovFactor(partialTick);
-			if (factor < 0.9999) {
-				info.setReturnValue(info.getReturnValue() * factor);
+			if (factor < 0.9999 && info.getReturnValue() != null) {
+				info.setReturnValue((float) (info.getReturnValue() * factor));
 			}
 		} catch (Throwable ignored) {
 			// keep the vanilla FOV

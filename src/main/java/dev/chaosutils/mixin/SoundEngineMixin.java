@@ -8,7 +8,7 @@ import net.minecraft.client.sounds.SoundEngine;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
  * Records every sound the client is about to play.
@@ -20,14 +20,14 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(SoundEngine.class)
 public class SoundEngineMixin {
 	@Inject(method = "play", at = @At("HEAD"), require = 0)
-	private void chaosutils$captureSound(SoundInstance sound, CallbackInfo info) {
+	private void chaosutils$captureSound(SoundInstance sound, CallbackInfoReturnable<SoundEngine.PlayResult> info) {
 		ApiCompat.seen("sound.play");
 		if (!Features.anySoundConsumerEnabled()) {
 			return;
 		}
 		try {
 			SoundTracker.push(
-					sound.getLocation().toString(),
+					sound.getIdentifier().toString(),
 					new net.minecraft.world.phys.Vec3(sound.getX(), sound.getY(), sound.getZ()),
 					sound.getSource() == null ? "master" : sound.getSource().getName(),
 					sound.getVolume(),

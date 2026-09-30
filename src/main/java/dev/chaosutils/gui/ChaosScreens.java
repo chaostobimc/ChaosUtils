@@ -602,7 +602,7 @@ public final class ChaosScreens {
 				}
 				ChaosConfig.WAYPOINTS.add(new Waypoint("Waypoint " + (ChaosConfig.WAYPOINTS.size() + 1),
 						client.player.getX(), client.player.getY(), client.player.getZ(),
-						client.level.dimension().location().toString(), theme.accent, false, 0L));
+						client.level.dimension().identifier().toString(), theme.accent, false, 0L));
 				ChaosConfig.markDirty();
 				refresh();
 			});

@@ -38,6 +38,9 @@ processResources {
 tasks.withType(JavaCompile).configureEach {
 	it.options.release = 21
 	it.options.encoding = 'UTF-8'
+	// Report every error in one run (javac stops at 100 by default) and show the detail lines -
+	// this makes the first build after a Minecraft update a single pass instead of several.
+	it.options.compilerArgs += ['-Xmaxerrs', '2000', '-Xdiags:verbose']
 }
 
 java {

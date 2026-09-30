@@ -48,6 +48,9 @@ processResources {
 tasks.withType(JavaCompile).configureEach {
 	it.options.release = 21
 	it.options.encoding = 'UTF-8'
+	// Report every error in one run (javac stops at 100 by default) and show the detail lines -
+	// this makes the first build after a Minecraft update a single pass instead of several.
+	it.options.compilerArgs += ['-Xmaxerrs', '2000', '-Xdiags:verbose']
 }
 
 java {
@@ -238,6 +241,7 @@ logs/
 	"client": [
 		"AbstractContainerScreenAccessor",
 		"AbstractContainerScreenMixin",
+		"CameraAccessor",
 		"CameraMixin",
 		"DebugScreenOverlayMixin",
 		"EntityMixin",
@@ -343,10 +347,10 @@ public final class ChaosUtils implements ClientModInitializer {
 		}
 		ChaosConfig.tick();
 		Features.tick(client);
-		if (Keybinds.openGui != null && Keybinds.openGui.wasPressed()) {
+		if (Keybinds.openGui != null && Keybinds.openGui.consumeClick()) {
 			client.setScreen(new dev.chaosutils.gui.ChaosClickGui());
 		}
-		if (Keybinds.panicToggle != null && Keybinds.panicToggle.wasPressed()) {
+		if (Keybinds.panicToggle != null && Keybinds.panicToggle.consumeClick()) {
 			toggleOverlays();
 			if (client.player != null) {
 				client.player.displayClientMessage(
@@ -720,9 +724,15 @@ public final class Module {
 		return Collections.unmodifiableList(settings);
 	}
 
-	public Module add(Setting<?> setting) {
+	/**
+	 * Registers a setting and returns it, so a feature can write
+	 * {@code toggle = module.add(new Setting.Toggle(...))} without a cast. (Returning the module
+	 * instead would force every call site to cast and would break as soon as a setting type is
+	 * added.)
+	 */
+	public <T extends Setting<?>> T add(T setting) {
 		settings.add(setting);
-		return this;
+		return setting;
 	}
 
 	public Setting<?> setting(String settingId) {
@@ -2272,7 +2282,7 @@ public final class EnchantLookup {
 			return "?";
 		}
 		try {
-			String path = enchantment.unwrapKey().map(key -> key.location().getPath()).orElse(null);
+			String path = enchantment.unwrapKey().map(key -> key.identifier().getPath()).orElse(null);
 			if (path == null) {
 				return "?";
 			}
@@ -2332,7 +2342,7 @@ public record HudPos(float x, float y) {
 	public static final HudPos TOP_LEFT = new HudPos(0.02F, 0.02F);
 	public static final HudPos TOP_RIGHT = new HudPos(0.98F, 0.02F);
 	public static final HudPos BOTTOM_LEFT = new HudPos(0.02F, 0.98F);
-	public static final HudPos BOTTOM_RIGHT = new HudPos(0.98F, 0.02F);
+	public static final HudPos BOTTOM_RIGHT = new HudPos(0.98F, 0.98F);
 	public static final HudPos TOP_CENTER = new HudPos(0.5F, 0.02F);
 	public static final HudPos CENTER = new HudPos(0.5F, 0.5F);
 
@@ -2412,7 +2422,7 @@ public final class InputUtil {
 			return false;
 		}
 		Minecraft client = Minecraft.getInstance();
-		long window = client.getWindow().getWindow();
+		long window = client.getWindow().handle();
 		try {
 			if (code <= -100) {
 				int button = -100 - code;
@@ -2434,7 +2444,7 @@ public final class InputUtil {
 	 * depending on the 1.21.9+ input event record accessors.
 	 */
 	public static int currentlyHeld() {
-		long window = Minecraft.getInstance().getWindow().getWindow();
+		long window = Minecraft.getInstance().getWindow().handle();
 		try {
 			for (int button = 0; button < 8; button++) {
 				if (org.lwjgl.glfw.GLFW.glfwGetMouseButton(window, button) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
@@ -2649,7 +2659,7 @@ public final class Projection {
 		}
 		Vec3 camera = null;
 		try {
-			camera = client.gameRenderer.getMainCamera().getPosition();
+			camera = client.gameRenderer.getMainCamera().position();
 		} catch (Throwable ignored) {
 			camera = null;
 		}
@@ -3256,7 +3266,7 @@ public final class SoundLookup {
 		if (event == null) {
 			return null;
 		}
-		SimpleSoundInstance instance = SimpleSoundInstance.forUI(event, pitch);
+		SimpleSoundInstance instance = SimpleSoundInstance.forUI(event, pitch, volume);
 		return instance;
 	}
 
@@ -3432,7 +3442,7 @@ public final class Features {
 					if (client.player == null || client.level == null || client.options.hideGui) {
 						return;
 					}
-					Projection.setup(client, graphics.getScaledWindowWidth(), graphics.getScaledWindowHeight(), TickClock.partialTick());
+					Projection.setup(client, graphics.guiWidth(), graphics.guiHeight(), TickClock.partialTick());
 					feature.onHudRender(graphics, TickClock.partialTick());
 				} catch (Throwable throwable) {
 					// A failing overlay must never take the game down; report once and skip.
@@ -3738,7 +3748,7 @@ public final class RadialMenuFeature implements Feature {
 		if (client.player == null) {
 			return;
 		}
-		boolean pressed = Keybinds.radialMenu != null && Keybinds.radialMenu.isPressed();
+		boolean pressed = Keybinds.radialMenu != null && Keybinds.radialMenu.isDown();
 		if (!isEnabled()) {
 			if (open != null) {
 				open.cancel();
@@ -3755,7 +3765,7 @@ public final class RadialMenuFeature implements Feature {
 				open = null;
 				screen.commitSelection();
 			}
-		} else if (pressed && Keybinds.radialMenu.wasPressed()) {
+		} else if (pressed && Keybinds.radialMenu.consumeClick()) {
 			if (open == null) {
 				openMenu(client);
 			} else {
@@ -5667,7 +5677,7 @@ public final class ChaosScreens {
 				}
 				ChaosConfig.WAYPOINTS.add(new Waypoint("Waypoint " + (ChaosConfig.WAYPOINTS.size() + 1),
 						client.player.getX(), client.player.getY(), client.player.getZ(),
-						client.level.dimension().location().toString(), theme.accent, false, 0L));
+						client.level.dimension().identifier().toString(), theme.accent, false, 0L));
 				ChaosConfig.markDirty();
 				refresh();
 			});
@@ -7089,8 +7099,8 @@ public final class ArmorStatusHud implements Feature {
 			boxWidth = stacks.size() * slotSpacing + padding * 2.0F;
 			boxHeight = Math.max(iconSize, labelHeight) + padding * 2.0F;
 		}
-		float x = position.get().screenX(graphics.getScaledWindowWidth(), Math.round(boxWidth));
-		float y = position.get().screenY(graphics.getScaledWindowHeight(), Math.round(boxHeight));
+		float x = position.get().screenX(graphics.guiWidth(), Math.round(boxWidth));
+		float y = position.get().screenY(graphics.guiHeight(), Math.round(boxHeight));
 		HudPanel.panel(graphics, font, x, y, boxWidth, boxHeight, 0xFF64B5F6);
 
 		for (int i = 0; i < stacks.size(); i++) {
@@ -7275,7 +7285,7 @@ public final class CompactDebugOverlay implements Feature {
 
 	@Override
 	public void onTick(Minecraft client) {
-		if (Keybinds.copyCoordinates != null && Keybinds.copyCoordinates.wasPressed() && client.player != null) {
+		if (Keybinds.copyCoordinates != null && Keybinds.copyCoordinates.consumeClick() && client.player != null) {
 			Player player = client.player;
 			Clipboard.copyText(String.format(Locale.ROOT, "%.1f %.1f %.1f", player.getX(), player.getY(), player.getZ()));
 		}
@@ -7332,7 +7342,7 @@ public final class CompactDebugOverlay implements Feature {
 		}
 		String facing = showFacing.get() ? "Facing " + compass(player.getYRot()) + "  (" + String.format(Locale.ROOT, "%.0f / %.0f", player.getYRot(), player.getXRot()) + ")" : null;
 		String dimension = showDimension.get() && client.level != null
-				? "Dim " + client.level.dimension().location().getPath() : null;
+				? "Dim " + client.level.dimension().identifier().getPath() : null;
 		String time = null;
 		if (showTime.get() && client.level != null) {
 			long dayTime = client.level.getDayTime() % 24000L;
@@ -7357,7 +7367,7 @@ public final class CompactDebugOverlay implements Feature {
 		if (showBiome.get() && client.level != null) {
 			try {
 				biome = "Biome " + client.level.getBiome(player.blockPosition()).unwrapKey()
-						.map(key -> prettify(key.location().getPath()))
+						.map(key -> prettify(key.identifier().getPath()))
 						.orElse("unknown");
 			} catch (Throwable ignored) {
 				biome = null;
@@ -7388,8 +7398,8 @@ public final class CompactDebugOverlay implements Feature {
 		}
 		float boxWidth = width * scaleFactor + padding * 2.0F;
 		float boxHeight = lines * lineHeight + padding * 2.0F;
-		float x = position.get().screenX(graphics.getScaledWindowWidth(), Math.round(boxWidth));
-		float y = position.get().screenY(graphics.getScaledWindowHeight(), Math.round(boxHeight));
+		float x = position.get().screenX(graphics.guiWidth(), Math.round(boxWidth));
+		float y = position.get().screenY(graphics.guiHeight(), Math.round(boxHeight));
 		HudPanel.panel(graphics, font, x, y, boxWidth, boxHeight, 0xFF4FC3F7);
 		float cursorY = y + padding;
 		for (String value : values) {
@@ -7597,8 +7607,8 @@ public final class DurabilityHud implements Feature {
 		}
 		float boxWidth = width + padding;
 		float boxHeight = ROWS.size() * rowHeight + padding * 2.0F;
-		float x = position.get().screenX(graphics.getScaledWindowWidth(), Math.round(boxWidth));
-		float y = position.get().screenY(graphics.getScaledWindowHeight(), Math.round(boxHeight));
+		float x = position.get().screenX(graphics.guiWidth(), Math.round(boxWidth));
+		float y = position.get().screenY(graphics.guiHeight(), Math.round(boxHeight));
 		boolean critical = ROWS.get(0).remaining() <= 3;
 		int accent = critical ? 0xFFE05B5B : 0xFFF0B429;
 		HudPanel.panel(graphics, font, x, y, boxWidth, boxHeight, accent);
@@ -8228,8 +8238,8 @@ public final class TpsPingHud implements Feature {
 		}
 		float boxWidth = width * scaleFactor;
 		float boxHeight = (lines * lineHeight + padding * 2.0F) * scaleFactor;
-		float x = position.get().screenX(graphics.getScaledWindowWidth(), Math.round(boxWidth));
-		float y = position.get().screenY(graphics.getScaledWindowHeight(), Math.round(boxHeight));
+		float x = position.get().screenX(graphics.guiWidth(), Math.round(boxWidth));
+		float y = position.get().screenY(graphics.guiHeight(), Math.round(boxHeight));
 
 		HudPanel.panel(graphics, font, x, y, boxWidth, boxHeight, 0xFF4DB6AC);
 		float cursorY = y + padding * scaleFactor;
@@ -8391,7 +8401,7 @@ public final class WaypointHud implements Feature {
 				deathRecorded = true;
 				long lifetime = (long) (deathLifetime.get() * 60_000.0);
 				Waypoint waypoint = new Waypoint("Death", player.getX(), player.getY(), player.getZ(),
-						client.level.dimension().location().toString(), 0xFFE05B5B, true, lifetime);
+						client.level.dimension().identifier().toString(), 0xFFE05B5B, true, lifetime);
 				if (lifetime <= 0L) {
 					waypoint.expiresAt = 0L;
 				}
@@ -8403,10 +8413,10 @@ public final class WaypointHud implements Feature {
 			deathRecorded = false;
 		}
 
-		if (Keybinds.addWaypoint != null && Keybinds.addWaypoint.wasPressed()) {
+		if (Keybinds.addWaypoint != null && Keybinds.addWaypoint.consumeClick()) {
 			Waypoint waypoint = new Waypoint("Waypoint " + (ChaosConfig.WAYPOINTS.size() + 1),
 					player.getX(), player.getY(), player.getZ(),
-					client.level.dimension().location().toString(), 0xFF7C5CFF, false, 0L);
+					client.level.dimension().identifier().toString(), 0xFF7C5CFF, false, 0L);
 			ChaosConfig.WAYPOINTS.add(waypoint);
 			ChaosConfig.markDirty();
 			notify(client, "Waypoint added: " + waypoint.name);
@@ -8449,7 +8459,7 @@ public final class WaypointHud implements Feature {
 	}
 
 	private static String currentDimension(Minecraft client) {
-		return client.level == null ? "minecraft:overworld" : client.level.dimension().location().toString();
+		return client.level == null ? "minecraft:overworld" : client.level.dimension().identifier().toString();
 	}
 
 	@Override
@@ -8479,7 +8489,7 @@ public final class WaypointHud implements Feature {
 			if (!Float.isNaN(point.x()) && point.depth() > 0.1F) {
 				if (beacons.get() && distance <= beaconRange.get()) {
 					int beamColor = Render.alpha(waypoint.color, 0.16F);
-					Render.rect(graphics, point.x() - 1.0F, 0.0F, 2.0F, graphics.getScaledWindowHeight(), beamColor);
+					Render.rect(graphics, point.x() - 1.0F, 0.0F, 2.0F, graphics.guiHeight(), beamColor);
 				}
 				if (point.onScreen(64.0F)) {
 					drawMarker(graphics, font, waypoint, point.x(), point.y(), distance, size, delta);
@@ -8515,8 +8525,8 @@ public final class WaypointHud implements Feature {
 
 	private static void drawArrow(GuiGraphics graphics, Font font, Waypoint waypoint, float targetX, float targetY,
 			double distance, float size) {
-		float centerX = graphics.getScaledWindowWidth() * 0.5F;
-		float centerY = graphics.getScaledWindowHeight() * 0.5F;
+		float centerX = graphics.guiWidth() * 0.5F;
+		float centerY = graphics.guiHeight() * 0.5F;
 		float bearing;
 		if (Float.isNaN(targetX)) {
 			bearing = Projection.bearingTo(waypoint.x, waypoint.z);
@@ -8697,8 +8707,8 @@ public final class CrosshairDesigner implements Feature {
 		if (selected == 5) {
 			return;
 		}
-		float centerX = graphics.getScaledWindowWidth() * 0.5F;
-		float centerY = graphics.getScaledWindowHeight() * 0.5F;
+		float centerX = graphics.guiWidth() * 0.5F;
+		float centerY = graphics.guiHeight() * 0.5F;
 
 		float targetSpread = 0.0F;
 		if (spread.get()) {
@@ -8942,12 +8952,12 @@ public final class GammaModule implements Feature {
 			return false;
 		}
 		if (boostToggle.get()) {
-			if (Keybinds.toggleGamma.wasPressed()) {
+			if (Keybinds.toggleGamma.consumeClick()) {
 				boostLatched = !boostLatched;
 			}
 			return boostLatched;
 		}
-		boostHeld = Keybinds.toggleGamma.isPressed();
+		boostHeld = Keybinds.toggleGamma.isDown();
 		return boostHeld;
 	}
 
@@ -8975,7 +8985,7 @@ public final class GammaModule implements Feature {
 		}
 		if (tintEnabled.get() && (override.get() || boostActive())) {
 			int color = Render.alpha(tintColor.get(), tintStrength.getFloat());
-			Render.rect(graphics, 0.0F, 0.0F, graphics.getScaledWindowWidth(), graphics.getScaledWindowHeight(), color);
+			Render.rect(graphics, 0.0F, 0.0F, graphics.guiWidth(), graphics.guiHeight(), color);
 		}
 		if (indicator.get() && (override.get() || boostActive())) {
 			Minecraft client = Minecraft.getInstance();
@@ -9010,6 +9020,7 @@ import dev.chaosutils.config.Setting;
 import dev.chaosutils.core.Keybinds;
 import dev.chaosutils.core.TickClock;
 import dev.chaosutils.feature.Feature;
+import dev.chaosutils.mixin.CameraAccessor;
 import dev.chaosutils.util.Anim;
 import net.minecraft.client.Camera;
 import net.minecraft.client.CameraType;
@@ -9101,9 +9112,9 @@ public final class PerspectiveLock implements Feature {
 			deactivate(client);
 			return;
 		}
-		boolean pressed = Keybinds.freeLook != null && Keybinds.freeLook.isPressed();
+		boolean pressed = Keybinds.freeLook != null && Keybinds.freeLook.isDown();
 		if (toggleMode.get()) {
-			if (pressed && Keybinds.freeLook.wasPressed()) {
+			if (pressed && Keybinds.freeLook.consumeClick()) {
 				if (active) {
 					deactivate(client);
 				} else {
@@ -9196,17 +9207,17 @@ public final class PerspectiveLock implements Feature {
 		Mode selected = selectedMode();
 		if (!initialised) {
 			initialised = true;
-			renderedYaw = camera.getYRot();
-			renderedPitch = camera.getXRot();
+			renderedYaw = camera.yRot();
+			renderedPitch = camera.xRot();
 		}
 		float targetYaw = lockedYaw;
 		// "Yaw locked, free pitch" keeps the vertical look free for a natural preview.
-		float targetPitch = selected == Mode.YAW_LOCK ? camera.getXRot() : lockedPitch;
+		float targetPitch = selected == Mode.YAW_LOCK ? camera.xRot() : lockedPitch;
 		float speed = rememberRotation.get() ? transitionSpeed.getFloat() : 30.0F;
 		float delta = TickClock.frameDelta();
 		renderedYaw = approachWrapped(renderedYaw, targetYaw, speed, delta);
 		renderedPitch = Anim.approach(renderedPitch, targetPitch, speed, delta);
-		camera.setRotation(renderedYaw, renderedPitch);
+		((CameraAccessor) camera).chaosutils$setRotation(renderedYaw, renderedPitch);
 	}
 
 	private static float approachWrapped(float current, float target, float speed, float deltaSeconds) {
@@ -9355,10 +9366,10 @@ public final class SmoothZoom implements Feature {
 			stop(client);
 			return;
 		}
-		boolean keyPressed = Keybinds.zoom != null && Keybinds.zoom.isPressed();
+		boolean keyPressed = Keybinds.zoom != null && Keybinds.zoom.isDown();
 		if (holdToZoom.get()) {
 			setActive(client, keyPressed);
-		} else if (keyPressed && Keybinds.zoom.wasPressed()) {
+		} else if (keyPressed && Keybinds.zoom.consumeClick()) {
 			setActive(client, !zoomActive);
 		}
 		applySensitivity(client);
@@ -9459,8 +9470,8 @@ public final class SmoothZoom implements Feature {
 		Font font = client.font;
 		String text = String.format(Locale.ROOT, "%.1fx", 1.0F / Math.max(0.01F, current));
 		float width = font.width(text) + 8.0F;
-		float x = (graphics.getScaledWindowWidth() - width) * 0.5F;
-		float y = graphics.getScaledWindowHeight() - 68.0F;
+		float x = (graphics.guiWidth() - width) * 0.5F;
+		float y = graphics.guiHeight() - 68.0F;
 		HudPanel.panel(graphics, font, x, y, width, 12.0F, 0xFF4FC3F7);
 		HudPanel.text(graphics, font, text, x + 4.0F, y + 2.0F, 0xFFF2F2F7);
 	}
@@ -9813,7 +9824,7 @@ public final class ContainerSearch implements Feature {
 			if (field == null && ModuleManager.enabled(ID)) {
 				attach(client, container, container.width, container.height);
 			}
-			if (field != null && Keybinds.searchContainer != null && Keybinds.searchContainer.wasPressed()) {
+			if (field != null && Keybinds.searchContainer != null && Keybinds.searchContainer.consumeClick()) {
 				container.setFocused(field);
 				field.setFocused(true);
 				field.setValue("");
@@ -9897,7 +9908,7 @@ public final class ContainerSearch implements Feature {
 					if (EnchantLookup.shortName(enchantment).toLowerCase(Locale.ROOT).contains(needle)) {
 						return true;
 					}
-					String path = enchantment.unwrapKey().map(key -> key.location().getPath()).orElse("");
+					String path = enchantment.unwrapKey().map(key -> key.identifier().getPath()).orElse("");
 					if (path.toLowerCase(Locale.ROOT).contains(needle)) {
 						return true;
 					}
@@ -10115,8 +10126,8 @@ public final class ItemCounter implements Feature {
 		if (scaleFactor <= 0.05F) {
 			return;
 		}
-		int hotbarLeft = graphics.getScaledWindowWidth() / 2 - 91;
-		int hotbarTop = graphics.getScaledWindowHeight() - 22;
+		int hotbarLeft = graphics.guiWidth() / 2 - 91;
+		int hotbarTop = graphics.guiHeight() - 22;
 		Inventory inventory = player.getInventory();
 		for (int slot = 0; slot < 9; slot++) {
 			ItemStack stack = inventory.getItem(slot);
@@ -10408,7 +10419,7 @@ public final class ChatHistory implements Feature {
 						Component.literal("§8[ChaosUtils] §7previous message repeated §f" + count + "×"), false);
 			}
 		}
-		if (Keybinds.chatHistory != null && Keybinds.chatHistory.wasPressed() && client.player != null) {
+		if (Keybinds.chatHistory != null && Keybinds.chatHistory.consumeClick() && client.player != null) {
 			client.setScreen(new dev.chaosutils.gui.ChaosScreens.ChatHistoryScreen(client.screen));
 		}
 	}
@@ -10570,9 +10581,11 @@ public final class ChatMentions implements Feature {
 			}
 			try {
 				String text = message.getString();
-				if (ignoreOwnMessages.get() && sender != null && Minecraft.getInstance().player != null
-						&& sender.getName() != null
-						&& sender.getName().equals(Minecraft.getInstance().player.getGameProfile().getName())) {
+				Minecraft client = Minecraft.getInstance();
+				// Comparing the profiles themselves avoids GameProfile accessors entirely, which
+				// keeps this independent of the authlib accessor names.
+				if (ignoreOwnMessages.get() && sender != null && client.player != null
+						&& sender.equals(client.player.getGameProfile())) {
 					return;
 				}
 				if (matches(text)) {
@@ -10588,8 +10601,9 @@ public final class ChatMentions implements Feature {
 		String haystack = caseSensitive.get() ? text : text.toLowerCase(Locale.ROOT);
 		Minecraft client = Minecraft.getInstance();
 		if (ownName.get() && client.player != null) {
-			String name = client.player.getGameProfile().getName();
-			if (name != null && !name.isEmpty() && contains(haystack, caseSensitive.get() ? name : name.toLowerCase(Locale.ROOT))) {
+			// The player's own display name, straight from the entity - no profile accessors.
+			String name = client.player.getName().getString();
+			if (!name.isEmpty() && contains(haystack, caseSensitive.get() ? name : name.toLowerCase(Locale.ROOT))) {
 				return true;
 			}
 		}
@@ -10695,7 +10709,7 @@ public final class ChatMentions implements Feature {
 		float lineHeight = 11.0F * scaleFactor;
 		float padding = HudPanel.padding() * scaleFactor;
 		int index = 0;
-		float y = position.get().screenY(graphics.getScaledWindowHeight(), Math.round(TOASTS.size() * (lineHeight + 4.0F * scaleFactor)));
+		float y = position.get().screenY(graphics.guiHeight(), Math.round(TOASTS.size() * (lineHeight + 4.0F * scaleFactor)));
 		for (Toast toast : TOASTS) {
 			long age = System.currentTimeMillis() - toast.createdAt;
 			float target = age > lifetime - 1200L ? 0.0F : 1.0F;
@@ -10706,12 +10720,12 @@ public final class ChatMentions implements Feature {
 				continue;
 			}
 			String text = toast.text;
-			float maxWidth = graphics.getScaledWindowWidth() * 0.45F;
+			float maxWidth = graphics.guiWidth() * 0.45F;
 			while (font.width(text) * scaleFactor > maxWidth && text.length() > 8) {
 				text = text.substring(0, text.length() - 2) + "…";
 			}
 			float width = font.width(text) * scaleFactor + padding * 2.0F;
-			float x = position.get().screenX(graphics.getScaledWindowWidth(), Math.round(width));
+			float x = position.get().screenX(graphics.guiWidth(), Math.round(width));
 			float offset = (1.0F - appearance) * 8.0F;
 			int color = Render.alpha(accent.get(), Anim.clamp01(appearance));
 			HudPanel.panel(graphics, font, x, y + offset + index * (lineHeight + 4.0F * scaleFactor), width,
@@ -10837,8 +10851,8 @@ public final class SoundRadar implements Feature {
 			return;
 		}
 		float radarRadius = radius.getFloat() * HudPanel.scale();
-		float centerX = position.get().screenX(graphics.getScaledWindowWidth(), Math.round(radarRadius * 2.0F)) + radarRadius;
-		float centerY = position.get().screenY(graphics.getScaledWindowHeight(), Math.round(radarRadius * 2.0F)) + radarRadius;
+		float centerX = position.get().screenX(graphics.guiWidth(), Math.round(radarRadius * 2.0F)) + radarRadius;
+		float centerY = position.get().screenY(graphics.guiHeight(), Math.round(radarRadius * 2.0F)) + radarRadius;
 		int styleValue = style.get();
 		List<SoundTracker.Entry> entries = collect(client.player);
 		if (entries.isEmpty() && styleValue == 1) {
@@ -10888,13 +10902,15 @@ public final class SoundRadar implements Feature {
 			Render.text(graphics, font, "L", centerX - radarRadius - 9.0F, centerY - 4.0F, 0x80FFFFFF, false);
 			Render.text(graphics, font, "R", centerX + radarRadius + 3.0F, centerY - 4.0F, 0x80FFFFFF, false);
 		}
-		double maxDistance = maxDistance.get();
+		// Note: "range" instead of "maxDistance" - a local variable with the field's name would
+		// shadow the setting inside its own initialiser.
+		double range = maxDistance.get();
 		Font font = Minecraft.getInstance().font;
 		int index = 0;
 		for (SoundTracker.Entry entry : entries) {
 			float bearing = Projection.bearingTo(entry.position().x, entry.position().z);
 			double distance = Projection.distanceTo(entry.position().x, entry.position().y, entry.position().z);
-			float fraction = (float) Math.min(1.0, distance / Math.max(1.0, maxDistance));
+			float fraction = (float) Math.min(1.0, distance / Math.max(1.0, range));
 			SoundClasses.Kind kind = SoundClasses.classify(entry.path());
 			float ageFade = Anim.clamp01(1.0F - entry.ageSeconds() / (float) Math.max(0.5, maxAge.get()));
 			float size = 3.0F + Anim.clamp01(entry.volume()) * 2.5F;
@@ -11025,12 +11041,18 @@ public final class SubtitlesPlus implements Feature {
 
 	private static final class Row {
 		private final String path;
+		/** Pretty name, computed once so the HUD does not re-derive it every frame. */
 		private final String name;
 		private int count;
 		private long lastAt;
 		private float bearing;
 		private double distance;
 		private SoundClasses.Kind kind;
+
+		private Row(String path) {
+			this.path = path;
+			this.name = SoundClasses.prettyName(path);
+		}
 	}
 
 	@Override
@@ -11174,8 +11196,8 @@ public final class SubtitlesPlus implements Feature {
 			width = Math.max(width, font.width(caption(row)) * scaleFactor + padding * 2.0F + 26.0F * scaleFactor);
 		}
 		float height = rows.size() * lineHeight + padding * 2.0F;
-		float x = position.get().screenX(graphics.getScaledWindowWidth(), Math.round(width));
-		float y = position.get().screenY(graphics.getScaledWindowHeight(), Math.round(height));
+		float x = position.get().screenX(graphics.guiWidth(), Math.round(width));
+		float y = position.get().screenY(graphics.guiHeight(), Math.round(height));
 		HudPanel.panel(graphics, font, x, y, width, height, 0xFF4FC3F7);
 		float cursorY = y + padding;
 		for (Row row : rows) {
@@ -11193,7 +11215,7 @@ public final class SubtitlesPlus implements Feature {
 
 	private static String caption(Row row) {
 		String symbol = row.kind == null ? "-" : SoundClasses.symbol(row.kind);
-		String text = symbol + " " + SoundClasses.prettyName(row.path);
+		String text = symbol + " " + row.name;
 		if (groupDuplicates.get() && row.count > 1) {
 			text = text + " ×" + row.count;
 		}
@@ -11355,7 +11377,9 @@ public final class VolumeDucker implements Feature {
 		}
 		if (alsoPauseMusic.get() && !focused) {
 			try {
-				client.getSoundManager().pause();
+				// Vanilla pauses everything except music and UI when the game is paused; here the
+				// music is meant to stop as well, so only the UI channel keeps playing.
+				client.getSoundManager().pauseAllExcept(SoundSource.UI);
 			} catch (Throwable ignored) {
 				// nothing to pause
 			}
@@ -11583,7 +11607,7 @@ public final class ScreenshotManager implements Feature {
 		if (client.player == null) {
 			return;
 		}
-		if (Keybinds.screenshotPopup != null && Keybinds.screenshotPopup.wasPressed()) {
+		if (Keybinds.screenshotPopup != null && Keybinds.screenshotPopup.consumeClick()) {
 			if (cropOnKey.get()) {
 				Path cropped = cropLatest();
 				if (cropped != null) {
@@ -11778,14 +11802,14 @@ public final class ScreenshotManager implements Feature {
 		Font font = client.font;
 		float scaleFactor = HudPanel.scale();
 		String text = toastText;
-		while (font.width(text) * scaleFactor > graphics.getScaledWindowWidth() * 0.5F && text.length() > 8) {
+		while (font.width(text) * scaleFactor > graphics.guiWidth() * 0.5F && text.length() > 8) {
 			text = text.substring(0, text.length() - 2) + "…";
 		}
 		String hint = "  [press the screenshot key]";
 		float width = (font.width(text) + font.width(hint)) * scaleFactor + HudPanel.padding() * 4.0F;
 		float height = 14.0F * scaleFactor + HudPanel.padding() * 2.0F;
-		float x = (graphics.getScaledWindowWidth() - width) * 0.5F;
-		float y = graphics.getScaledWindowHeight() - 90.0F - (1.0F - appearance) * 8.0F;
+		float x = (graphics.guiWidth() - width) * 0.5F;
+		float y = graphics.guiHeight() - 90.0F - (1.0F - appearance) * 8.0F;
 		int accent = Render.alpha(0xFF4FC3F7, Anim.clamp01(appearance));
 		HudPanel.panel(graphics, font, x, y, width, height, accent);
 		HudPanel.text(graphics, font, text, x + HudPanel.padding() * 2.0F, y + HudPanel.padding(),
@@ -12140,6 +12164,33 @@ public class AbstractContainerScreenMixin {
 }
 ```
 
+### `src/main/java/dev/chaosutils/mixin/CameraAccessor.java`
+
+```java
+package dev.chaosutils.mixin;
+
+import net.minecraft.client.Camera;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.gen.Invoker;
+
+/**
+ * Invoker for the camera rotation.
+ *
+ * <p>{@code Camera#setRotation(float, float)} is {@code protected} in 1.21.11, and the
+ * perspective lock changes the camera from outside the class hierarchy. A mixin invoker is
+ * the supported way to reach it - no reflection, no duck-typed casting and no access
+ * widening on the vanilla class itself.
+ *
+ * <p>The invoker only ever rotates the already computed camera. The player entity, its
+ * hitbox and its movement stay untouched, so this stays a purely visual feature.
+ */
+@Mixin(Camera.class)
+public interface CameraAccessor {
+	@Invoker("setRotation")
+	void chaosutils$setRotation(float yRot, float xRot);
+}
+```
+
 ### `src/main/java/dev/chaosutils/mixin/CameraMixin.java`
 
 ```java
@@ -12149,7 +12200,7 @@ import dev.chaosutils.core.ApiCompat;
 import dev.chaosutils.feature.visual.PerspectiveLock;
 import net.minecraft.client.Camera;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.Level;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -12166,7 +12217,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(Camera.class)
 public class CameraMixin {
 	@Inject(method = "setup", at = @At("TAIL"), require = 0)
-	private void chaosutils$lockRotation(BlockGetter level, Entity entity, boolean detached, boolean thirdPersonReverse, float partialTick, CallbackInfo info) {
+	private void chaosutils$lockRotation(Level level, Entity entity, boolean detached, boolean thirdPersonReverse, float partialTick, CallbackInfo info) {
 		ApiCompat.seen("camera.setup");
 		if (!PerspectiveLock.isActive()) {
 			return;
@@ -12281,12 +12332,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(GameRenderer.class)
 public class GameRendererMixin {
 	@Inject(method = "getFov", at = @At("RETURN"), cancellable = true, require = 0)
-	private void chaosutils$zoomFov(Camera camera, float partialTick, boolean useFovSetting, CallbackInfoReturnable<Double> info) {
+	private void chaosutils$zoomFov(Camera camera, float partialTick, boolean useFovSetting, CallbackInfoReturnable<Float> info) {
 		ApiCompat.seen("renderer.fov");
 		try {
 			double factor = SmoothZoom.fovFactor(partialTick);
-			if (factor < 0.9999) {
-				info.setReturnValue(info.getReturnValue() * factor);
+			if (factor < 0.9999 && info.getReturnValue() != null) {
+				info.setReturnValue((float) (info.getReturnValue() * factor));
 			}
 		} catch (Throwable ignored) {
 			// keep the vanilla FOV
@@ -12370,11 +12421,9 @@ package dev.chaosutils.mixin;
 
 import dev.chaosutils.core.ApiCompat;
 import dev.chaosutils.feature.performance.ParticleReducer;
-import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.particle.Particle;
 import net.minecraft.client.particle.ParticleEngine;
 import net.minecraft.core.particles.ParticleOptions;
-import net.minecraft.util.RandomSource;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -12390,8 +12439,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(ParticleEngine.class)
 public class ParticleEngineMixin {
 	@Inject(method = "createParticle", at = @At("HEAD"), cancellable = true, require = 0)
-	private void chaosutils$filterParticle(ParticleOptions options, ClientLevel level, double x, double y, double z,
-			double xSpeed, double ySpeed, double zSpeed, RandomSource random, CallbackInfoReturnable<Particle> info) {
+	private void chaosutils$filterParticle(ParticleOptions options, double x, double y, double z,
+			double xSpeed, double ySpeed, double zSpeed, CallbackInfoReturnable<Particle> info) {
 		ApiCompat.seen("particle.create");
 		try {
 			if (ParticleReducer.hides(options)) {
@@ -12417,7 +12466,7 @@ import net.minecraft.client.sounds.SoundEngine;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
  * Records every sound the client is about to play.
@@ -12429,14 +12478,14 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(SoundEngine.class)
 public class SoundEngineMixin {
 	@Inject(method = "play", at = @At("HEAD"), require = 0)
-	private void chaosutils$captureSound(SoundInstance sound, CallbackInfo info) {
+	private void chaosutils$captureSound(SoundInstance sound, CallbackInfoReturnable<SoundEngine.PlayResult> info) {
 		ApiCompat.seen("sound.play");
 		if (!Features.anySoundConsumerEnabled()) {
 			return;
 		}
 		try {
 			SoundTracker.push(
-					sound.getLocation().toString(),
+					sound.getIdentifier().toString(),
 					new net.minecraft.world.phys.Vec3(sound.getX(), sound.getY(), sound.getZ()),
 					sound.getSource() == null ? "master" : sound.getSource().getName(),
 					sound.getVolume(),

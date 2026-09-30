@@ -40,7 +40,7 @@ public final class InputUtil {
 			return false;
 		}
 		Minecraft client = Minecraft.getInstance();
-		long window = client.getWindow().getWindow();
+		long window = client.getWindow().handle();
 		try {
 			if (code <= -100) {
 				int button = -100 - code;
@@ -62,7 +62,7 @@ public final class InputUtil {
 	 * depending on the 1.21.9+ input event record accessors.
 	 */
 	public static int currentlyHeld() {
-		long window = Minecraft.getInstance().getWindow().getWindow();
+		long window = Minecraft.getInstance().getWindow().handle();
 		try {
 			for (int button = 0; button < 8; button++) {
 				if (org.lwjgl.glfw.GLFW.glfwGetMouseButton(window, button) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {

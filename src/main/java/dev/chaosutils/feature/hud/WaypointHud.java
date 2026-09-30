@@ -95,7 +95,7 @@ public final class WaypointHud implements Feature {
 				deathRecorded = true;
 				long lifetime = (long) (deathLifetime.get() * 60_000.0);
 				Waypoint waypoint = new Waypoint("Death", player.getX(), player.getY(), player.getZ(),
-						client.level.dimension().location().toString(), 0xFFE05B5B, true, lifetime);
+						client.level.dimension().identifier().toString(), 0xFFE05B5B, true, lifetime);
 				if (lifetime <= 0L) {
 					waypoint.expiresAt = 0L;
 				}
@@ -107,10 +107,10 @@ public final class WaypointHud implements Feature {
 			deathRecorded = false;
 		}
 
-		if (Keybinds.addWaypoint != null && Keybinds.addWaypoint.wasPressed()) {
+		if (Keybinds.addWaypoint != null && Keybinds.addWaypoint.consumeClick()) {
 			Waypoint waypoint = new Waypoint("Waypoint " + (ChaosConfig.WAYPOINTS.size() + 1),
 					player.getX(), player.getY(), player.getZ(),
-					client.level.dimension().location().toString(), 0xFF7C5CFF, false, 0L);
+					client.level.dimension().identifier().toString(), 0xFF7C5CFF, false, 0L);
 			ChaosConfig.WAYPOINTS.add(waypoint);
 			ChaosConfig.markDirty();
 			notify(client, "Waypoint added: " + waypoint.name);
@@ -153,7 +153,7 @@ public final class WaypointHud implements Feature {
 	}
 
 	private static String currentDimension(Minecraft client) {
-		return client.level == null ? "minecraft:overworld" : client.level.dimension().location().toString();
+		return client.level == null ? "minecraft:overworld" : client.level.dimension().identifier().toString();
 	}
 
 	@Override
@@ -183,7 +183,7 @@ public final class WaypointHud implements Feature {
 			if (!Float.isNaN(point.x()) && point.depth() > 0.1F) {
 				if (beacons.get() && distance <= beaconRange.get()) {
 					int beamColor = Render.alpha(waypoint.color, 0.16F);
-					Render.rect(graphics, point.x() - 1.0F, 0.0F, 2.0F, graphics.getScaledWindowHeight(), beamColor);
+					Render.rect(graphics, point.x() - 1.0F, 0.0F, 2.0F, graphics.guiHeight(), beamColor);
 				}
 				if (point.onScreen(64.0F)) {
 					drawMarker(graphics, font, waypoint, point.x(), point.y(), distance, size, delta);
@@ -219,8 +219,8 @@ public final class WaypointHud implements Feature {
 
 	private static void drawArrow(GuiGraphics graphics, Font font, Waypoint waypoint, float targetX, float targetY,
 			double distance, float size) {
-		float centerX = graphics.getScaledWindowWidth() * 0.5F;
-		float centerY = graphics.getScaledWindowHeight() * 0.5F;
+		float centerX = graphics.guiWidth() * 0.5F;
+		float centerY = graphics.guiHeight() * 0.5F;
 		float bearing;
 		if (Float.isNaN(targetX)) {
 			bearing = Projection.bearingTo(waypoint.x, waypoint.z);

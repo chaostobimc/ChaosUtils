@@ -163,8 +163,8 @@ public final class DurabilityHud implements Feature {
 		}
 		float boxWidth = width + padding;
 		float boxHeight = ROWS.size() * rowHeight + padding * 2.0F;
-		float x = position.get().screenX(graphics.getScaledWindowWidth(), Math.round(boxWidth));
-		float y = position.get().screenY(graphics.getScaledWindowHeight(), Math.round(boxHeight));
+		float x = position.get().screenX(graphics.guiWidth(), Math.round(boxWidth));
+		float y = position.get().screenY(graphics.guiHeight(), Math.round(boxHeight));
 		boolean critical = ROWS.get(0).remaining() <= 3;
 		int accent = critical ? 0xFFE05B5B : 0xFFF0B429;
 		HudPanel.panel(graphics, font, x, y, boxWidth, boxHeight, accent);

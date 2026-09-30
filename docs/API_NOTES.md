@@ -86,20 +86,48 @@ All injectors use `require = 0` and every handler is wrapped in a defensive try/
 If a future Minecraft release moves one of these methods, the affected feature degrades
 silently and the log says exactly which one.
 
-### Points worth re-checking after a Minecraft update
+### Signatures verified against the decompiled 1.21.11 sources
 
-These are the only places where a signature cannot be inferred from the source in this repo
-(they are the least stable names in the Mojang mappings):
+Every name below was checked against a Mojang-mapped 1.21.11 source tree
+(`version.json` -> `1.21.11_unobfuscated`) and against the NeoForge 1.21.11 branch
+and the Fabric API `1.21.11` branch. These are the exact signatures ChaosUtils uses.
 
-1. `EditBox(Font, int, int, int, int, Component)` and its setters (`setBordered`, `setMaxLength`,
-   `setResponder`, `setTextColor`) — used by the container search field and the text dialogs.
-2. `Gui#getChat()` — used to restore the chat history after a reconnect.
-3. `BundleContents#items()` — used by the bundle preview.
-4. `ItemEnchantments#keySet()` / `getLevel(Holder)` — used for the enchantment short names.
-5. `Options#getSoundSourceOptionInstance(SoundSource)` — used by the volume ducker.
-6. `Camera#setRotation(float, float)` — used by the perspective lock.
+| Area | 1.21.11 signature | Used for |
+| --- | --- | --- |
+| `KeyMapping` | `isDown()`, `consumeClick()`, `Category.MISC`, `KeyMapping(String, InputConstants.Type, int, Category)` | every hotkey |
+| `GuiGraphics` | `guiWidth()`, `guiHeight()`, `drawString(Font, String, int, int, int, boolean)`, `drawCenteredString(Font, String, int, int, int)`, `enableScissor(int, int, int, int)`, `disableScissor()`, `renderItem(ItemStack, int, int)`, `renderItemDecorations(Font, ItemStack, int, int)`, `pose()` | all rendering |
+| Input model (1.21.9+) | `MouseButtonEvent`, `KeyEvent`, `CharacterEvent`; `mouseClicked(MouseButtonEvent, boolean)`, `mouseReleased(MouseButtonEvent)`, `mouseDragged(MouseButtonEvent, double, double)`, `mouseScrolled(double, double, double, double)` | every ChaosUtils screen |
+| `ResourceKey` | `identifier()`, `registry()` - **not** `location()` | dimension names, enchantment ids |
+| `SoundInstance` | `getIdentifier()` - **not** `getLocation()`; `getSource()`, `getVolume()`, `getPitch()`, `getX()/getY()/getZ()`, `isRelative()` | sound radar, subtitles |
+| `SoundEngine` | `play(SoundInstance)` returns `SoundEngine.PlayResult`; `resume()` | sound hook, volume ducker |
+| `SoundManager` | `pauseAllExcept(SoundSource...)`, `resume()` | unfocused volume reducer |
+| `SimpleSoundInstance` | `forUI(SoundEvent, float, float)` | UI feedback sounds |
+| `Camera` | `xRot()`, `yRot()`, `yaw()`, `position()`, `blockPosition()`, `setup(Level, Entity, boolean, boolean, float)`; `setRotation(float, float)` is `protected` -> reached through the `CameraAccessor` `@Invoker` | perspective lock, projection |
+| `GameRenderer` | `getFov(Camera, float, boolean)` returns **`float`** (was `double`) | smooth zoom mixin |
+| `DebugScreenOverlay` | `render(GuiGraphics)` | compact F3 overlay |
+| `Gui` | `renderCrosshair(GuiGraphics, DeltaTracker)`, `getChat()` | crosshair designer, chat history |
+| `Window` | `handle()` - **not** `getWindow()`; `getGuiScaledWidth()/Height()` | GLFW polling in `InputUtil` |
+| `Minecraft` | `getDebugOverlay()`, `getFps()`, `getUser()`, `isWindowActive()`, `getWindow().handle()` | debug overlay, ping/TPS |
+| `ItemStack` | `get(DataComponentType<T>)` via `DataComponentHolder`, `getEnchantments()`, `getMaxDamage()`, `getDamageValue()`, `isDamageableItem()`, `getHoverName()` | tooltips, durability, counter |
+| `ItemContainerContents` / `BundleContents` | `nonEmptyItems()`, `nonEmptyStream()` / `items()` | container + bundle preview |
+| `ItemEnchantments` | `keySet()`, `getLevel(Holder<Enchantment>)` | enchantment short names |
+| `EditBox` | `EditBox(Font, int, int, int, int, Component)` | container search, text dialogs |
+| `Options` | `showSubtitles()`, `getCameraType()/setCameraType()`, `fov()/gamma()/sensitivity()`, `getSoundSourceOptionInstance(SoundSource)` | subtitles, gamma, zoom, ducking |
+| `Registry` | `getKey(Object)` -> `Identifier` | item/sound/particle ids |
+| `LevelAccessor` | default `getGameTime()`; `Level#getDayTime()` | TPS estimator, debug overlay |
 
-Each is isolated in a single small method with a try/catch around it.
+Fabric API parts (branch `1.21.11`, version `0.141.6+1.21.11`):
+
+* `HudElementRegistry.addLast(Identifier, HudElement)` with `HudElement#render(GuiGraphics, DeltaTracker)`
+* `ItemTooltipCallback#getTooltip(ItemStack, Item.TooltipContext, TooltipFlag, List<Component>)`
+* `KeyBindingHelper.registerKeyBinding(KeyMapping)`
+* `Screens.getButtons(Screen)` -> mutable `List<AbstractWidget>`
+* `ScreenEvents.AFTER_INIT / remove / beforeRender / afterRender / beforeTick / afterTick`
+* `ClientReceiveMessageEvents.CHAT / GAME / ALLOW_CHAT / ALLOW_GAME / CHAT_CANCELED / GAME_CANCELED`
+* `ClientTickEvents.START_CLIENT_TICK / END_CLIENT_TICK`
+
+Everything else risky is wrapped in `try/catch` and guarded by `ApiCompat.seen(...)`, so a future
+rename degrades a single feature instead of crashing the game.
 
 ## Fair play statement
 

@@ -109,7 +109,7 @@ public final class CompactDebugOverlay implements Feature {
 
 	@Override
 	public void onTick(Minecraft client) {
-		if (Keybinds.copyCoordinates != null && Keybinds.copyCoordinates.wasPressed() && client.player != null) {
+		if (Keybinds.copyCoordinates != null && Keybinds.copyCoordinates.consumeClick() && client.player != null) {
 			Player player = client.player;
 			Clipboard.copyText(String.format(Locale.ROOT, "%.1f %.1f %.1f", player.getX(), player.getY(), player.getZ()));
 		}
@@ -166,7 +166,7 @@ public final class CompactDebugOverlay implements Feature {
 		}
 		String facing = showFacing.get() ? "Facing " + compass(player.getYRot()) + "  (" + String.format(Locale.ROOT, "%.0f / %.0f", player.getYRot(), player.getXRot()) + ")" : null;
 		String dimension = showDimension.get() && client.level != null
-				? "Dim " + client.level.dimension().location().getPath() : null;
+				? "Dim " + client.level.dimension().identifier().getPath() : null;
 		String time = null;
 		if (showTime.get() && client.level != null) {
 			long dayTime = client.level.getDayTime() % 24000L;
@@ -191,7 +191,7 @@ public final class CompactDebugOverlay implements Feature {
 		if (showBiome.get() && client.level != null) {
 			try {
 				biome = "Biome " + client.level.getBiome(player.blockPosition()).unwrapKey()
-						.map(key -> prettify(key.location().getPath()))
+						.map(key -> prettify(key.identifier().getPath()))
 						.orElse("unknown");
 			} catch (Throwable ignored) {
 				biome = null;
@@ -222,8 +222,8 @@ public final class CompactDebugOverlay implements Feature {
 		}
 		float boxWidth = width * scaleFactor + padding * 2.0F;
 		float boxHeight = lines * lineHeight + padding * 2.0F;
-		float x = position.get().screenX(graphics.getScaledWindowWidth(), Math.round(boxWidth));
-		float y = position.get().screenY(graphics.getScaledWindowHeight(), Math.round(boxHeight));
+		float x = position.get().screenX(graphics.guiWidth(), Math.round(boxWidth));
+		float y = position.get().screenY(graphics.guiHeight(), Math.round(boxHeight));
 		HudPanel.panel(graphics, font, x, y, boxWidth, boxHeight, 0xFF4FC3F7);
 		float cursorY = y + padding;
 		for (String value : values) {

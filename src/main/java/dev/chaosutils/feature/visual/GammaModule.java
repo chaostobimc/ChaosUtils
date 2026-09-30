@@ -118,12 +118,12 @@ public final class GammaModule implements Feature {
 			return false;
 		}
 		if (boostToggle.get()) {
-			if (Keybinds.toggleGamma.wasPressed()) {
+			if (Keybinds.toggleGamma.consumeClick()) {
 				boostLatched = !boostLatched;
 			}
 			return boostLatched;
 		}
-		boostHeld = Keybinds.toggleGamma.isPressed();
+		boostHeld = Keybinds.toggleGamma.isDown();
 		return boostHeld;
 	}
 
@@ -151,7 +151,7 @@ public final class GammaModule implements Feature {
 		}
 		if (tintEnabled.get() && (override.get() || boostActive())) {
 			int color = Render.alpha(tintColor.get(), tintStrength.getFloat());
-			Render.rect(graphics, 0.0F, 0.0F, graphics.getScaledWindowWidth(), graphics.getScaledWindowHeight(), color);
+			Render.rect(graphics, 0.0F, 0.0F, graphics.guiWidth(), graphics.guiHeight(), color);
 		}
 		if (indicator.get() && (override.get() || boostActive())) {
 			Minecraft client = Minecraft.getInstance();

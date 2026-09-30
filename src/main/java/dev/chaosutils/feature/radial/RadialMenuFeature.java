@@ -100,7 +100,7 @@ public final class RadialMenuFeature implements Feature {
 		if (client.player == null) {
 			return;
 		}
-		boolean pressed = Keybinds.radialMenu != null && Keybinds.radialMenu.isPressed();
+		boolean pressed = Keybinds.radialMenu != null && Keybinds.radialMenu.isDown();
 		if (!isEnabled()) {
 			if (open != null) {
 				open.cancel();
@@ -117,7 +117,7 @@ public final class RadialMenuFeature implements Feature {
 				open = null;
 				screen.commitSelection();
 			}
-		} else if (pressed && Keybinds.radialMenu.wasPressed()) {
+		} else if (pressed && Keybinds.radialMenu.consumeClick()) {
 			if (open == null) {
 				openMenu(client);
 			} else {

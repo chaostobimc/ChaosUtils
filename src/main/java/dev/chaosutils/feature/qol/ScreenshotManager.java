@@ -117,7 +117,7 @@ public final class ScreenshotManager implements Feature {
 		if (client.player == null) {
 			return;
 		}
-		if (Keybinds.screenshotPopup != null && Keybinds.screenshotPopup.wasPressed()) {
+		if (Keybinds.screenshotPopup != null && Keybinds.screenshotPopup.consumeClick()) {
 			if (cropOnKey.get()) {
 				Path cropped = cropLatest();
 				if (cropped != null) {
@@ -312,14 +312,14 @@ public final class ScreenshotManager implements Feature {
 		Font font = client.font;
 		float scaleFactor = HudPanel.scale();
 		String text = toastText;
-		while (font.width(text) * scaleFactor > graphics.getScaledWindowWidth() * 0.5F && text.length() > 8) {
+		while (font.width(text) * scaleFactor > graphics.guiWidth() * 0.5F && text.length() > 8) {
 			text = text.substring(0, text.length() - 2) + "…";
 		}
 		String hint = "  [press the screenshot key]";
 		float width = (font.width(text) + font.width(hint)) * scaleFactor + HudPanel.padding() * 4.0F;
 		float height = 14.0F * scaleFactor + HudPanel.padding() * 2.0F;
-		float x = (graphics.getScaledWindowWidth() - width) * 0.5F;
-		float y = graphics.getScaledWindowHeight() - 90.0F - (1.0F - appearance) * 8.0F;
+		float x = (graphics.guiWidth() - width) * 0.5F;
+		float y = graphics.guiHeight() - 90.0F - (1.0F - appearance) * 8.0F;
 		int accent = Render.alpha(0xFF4FC3F7, Anim.clamp01(appearance));
 		HudPanel.panel(graphics, font, x, y, width, height, accent);
 		HudPanel.text(graphics, font, text, x + HudPanel.padding() * 2.0F, y + HudPanel.padding(),

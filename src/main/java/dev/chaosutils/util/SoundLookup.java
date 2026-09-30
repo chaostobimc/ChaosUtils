@@ -57,7 +57,7 @@ public final class SoundLookup {
 		if (event == null) {
 			return null;
 		}
-		SimpleSoundInstance instance = SimpleSoundInstance.forUI(event, pitch);
+		SimpleSoundInstance instance = SimpleSoundInstance.forUI(event, pitch, volume);
 		return instance;
 	}
 

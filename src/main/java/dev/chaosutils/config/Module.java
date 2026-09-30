@@ -53,9 +53,15 @@ public final class Module {
 		return Collections.unmodifiableList(settings);
 	}
 
-	public Module add(Setting<?> setting) {
+	/**
+	 * Registers a setting and returns it, so a feature can write
+	 * {@code toggle = module.add(new Setting.Toggle(...))} without a cast. (Returning the module
+	 * instead would force every call site to cast and would break as soon as a setting type is
+	 * added.)
+	 */
+	public <T extends Setting<?>> T add(T setting) {
 		settings.add(setting);
-		return this;
+		return setting;
 	}
 
 	public Setting<?> setting(String settingId) {

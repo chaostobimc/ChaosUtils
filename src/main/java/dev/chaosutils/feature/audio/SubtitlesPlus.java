@@ -57,12 +57,18 @@ public final class SubtitlesPlus implements Feature {
 
 	private static final class Row {
 		private final String path;
+		/** Pretty name, computed once so the HUD does not re-derive it every frame. */
 		private final String name;
 		private int count;
 		private long lastAt;
 		private float bearing;
 		private double distance;
 		private SoundClasses.Kind kind;
+
+		private Row(String path) {
+			this.path = path;
+			this.name = SoundClasses.prettyName(path);
+		}
 	}
 
 	@Override
@@ -206,8 +212,8 @@ public final class SubtitlesPlus implements Feature {
 			width = Math.max(width, font.width(caption(row)) * scaleFactor + padding * 2.0F + 26.0F * scaleFactor);
 		}
 		float height = rows.size() * lineHeight + padding * 2.0F;
-		float x = position.get().screenX(graphics.getScaledWindowWidth(), Math.round(width));
-		float y = position.get().screenY(graphics.getScaledWindowHeight(), Math.round(height));
+		float x = position.get().screenX(graphics.guiWidth(), Math.round(width));
+		float y = position.get().screenY(graphics.guiHeight(), Math.round(height));
 		HudPanel.panel(graphics, font, x, y, width, height, 0xFF4FC3F7);
 		float cursorY = y + padding;
 		for (Row row : rows) {
@@ -225,7 +231,7 @@ public final class SubtitlesPlus implements Feature {
 
 	private static String caption(Row row) {
 		String symbol = row.kind == null ? "-" : SoundClasses.symbol(row.kind);
-		String text = symbol + " " + SoundClasses.prettyName(row.path);
+		String text = symbol + " " + row.name;
 		if (groupDuplicates.get() && row.count > 1) {
 			text = text + " ×" + row.count;
 		}

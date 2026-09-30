@@ -131,7 +131,7 @@ public final class ContainerSearch implements Feature {
 			if (field == null && ModuleManager.enabled(ID)) {
 				attach(client, container, container.width, container.height);
 			}
-			if (field != null && Keybinds.searchContainer != null && Keybinds.searchContainer.wasPressed()) {
+			if (field != null && Keybinds.searchContainer != null && Keybinds.searchContainer.consumeClick()) {
 				container.setFocused(field);
 				field.setFocused(true);
 				field.setValue("");
@@ -215,7 +215,7 @@ public final class ContainerSearch implements Feature {
 					if (EnchantLookup.shortName(enchantment).toLowerCase(Locale.ROOT).contains(needle)) {
 						return true;
 					}
-					String path = enchantment.unwrapKey().map(key -> key.location().getPath()).orElse("");
+					String path = enchantment.unwrapKey().map(key -> key.identifier().getPath()).orElse("");
 					if (path.toLowerCase(Locale.ROOT).contains(needle)) {
 						return true;
 					}

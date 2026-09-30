@@ -60,7 +60,7 @@ public final class Features {
 					if (client.player == null || client.level == null || client.options.hideGui) {
 						return;
 					}
-					Projection.setup(client, graphics.getScaledWindowWidth(), graphics.getScaledWindowHeight(), TickClock.partialTick());
+					Projection.setup(client, graphics.guiWidth(), graphics.guiHeight(), TickClock.partialTick());
 					feature.onHudRender(graphics, TickClock.partialTick());
 				} catch (Throwable throwable) {
 					// A failing overlay must never take the game down; report once and skip.

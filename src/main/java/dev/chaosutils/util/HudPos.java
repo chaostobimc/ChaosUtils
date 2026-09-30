@@ -15,7 +15,7 @@ public record HudPos(float x, float y) {
 	public static final HudPos TOP_LEFT = new HudPos(0.02F, 0.02F);
 	public static final HudPos TOP_RIGHT = new HudPos(0.98F, 0.02F);
 	public static final HudPos BOTTOM_LEFT = new HudPos(0.02F, 0.98F);
-	public static final HudPos BOTTOM_RIGHT = new HudPos(0.98F, 0.02F);
+	public static final HudPos BOTTOM_RIGHT = new HudPos(0.98F, 0.98F);
 	public static final HudPos TOP_CENTER = new HudPos(0.5F, 0.02F);
 	public static final HudPos CENTER = new HudPos(0.5F, 0.5F);
 

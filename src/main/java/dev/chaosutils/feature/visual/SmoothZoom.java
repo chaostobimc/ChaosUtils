@@ -83,10 +83,10 @@ public final class SmoothZoom implements Feature {
 			stop(client);
 			return;
 		}
-		boolean keyPressed = Keybinds.zoom != null && Keybinds.zoom.isPressed();
+		boolean keyPressed = Keybinds.zoom != null && Keybinds.zoom.isDown();
 		if (holdToZoom.get()) {
 			setActive(client, keyPressed);
-		} else if (keyPressed && Keybinds.zoom.wasPressed()) {
+		} else if (keyPressed && Keybinds.zoom.consumeClick()) {
 			setActive(client, !zoomActive);
 		}
 		applySensitivity(client);
@@ -187,8 +187,8 @@ public final class SmoothZoom implements Feature {
 		Font font = client.font;
 		String text = String.format(Locale.ROOT, "%.1fx", 1.0F / Math.max(0.01F, current));
 		float width = font.width(text) + 8.0F;
-		float x = (graphics.getScaledWindowWidth() - width) * 0.5F;
-		float y = graphics.getScaledWindowHeight() - 68.0F;
+		float x = (graphics.guiWidth() - width) * 0.5F;
+		float y = graphics.guiHeight() - 68.0F;
 		HudPanel.panel(graphics, font, x, y, width, 12.0F, 0xFF4FC3F7);
 		HudPanel.text(graphics, font, text, x + 4.0F, y + 2.0F, 0xFFF2F2F7);
 	}

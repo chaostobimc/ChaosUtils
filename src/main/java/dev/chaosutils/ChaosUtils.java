@@ -65,10 +65,10 @@ public final class ChaosUtils implements ClientModInitializer {
 		}
 		ChaosConfig.tick();
 		Features.tick(client);
-		if (Keybinds.openGui != null && Keybinds.openGui.wasPressed()) {
+		if (Keybinds.openGui != null && Keybinds.openGui.consumeClick()) {
 			client.setScreen(new dev.chaosutils.gui.ChaosClickGui());
 		}
-		if (Keybinds.panicToggle != null && Keybinds.panicToggle.wasPressed()) {
+		if (Keybinds.panicToggle != null && Keybinds.panicToggle.consumeClick()) {
 			toggleOverlays();
 			if (client.player != null) {
 				client.player.displayClientMessage(

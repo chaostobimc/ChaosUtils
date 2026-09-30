@@ -54,7 +54,7 @@ public final class Projection {
 		}
 		Vec3 camera = null;
 		try {
-			camera = client.gameRenderer.getMainCamera().getPosition();
+			camera = client.gameRenderer.getMainCamera().position();
 		} catch (Throwable ignored) {
 			camera = null;
 		}

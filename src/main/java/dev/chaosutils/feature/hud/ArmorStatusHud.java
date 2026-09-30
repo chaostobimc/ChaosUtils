@@ -119,8 +119,8 @@ public final class ArmorStatusHud implements Feature {
 			boxWidth = stacks.size() * slotSpacing + padding * 2.0F;
 			boxHeight = Math.max(iconSize, labelHeight) + padding * 2.0F;
 		}
-		float x = position.get().screenX(graphics.getScaledWindowWidth(), Math.round(boxWidth));
-		float y = position.get().screenY(graphics.getScaledWindowHeight(), Math.round(boxHeight));
+		float x = position.get().screenX(graphics.guiWidth(), Math.round(boxWidth));
+		float y = position.get().screenY(graphics.guiHeight(), Math.round(boxHeight));
 		HudPanel.panel(graphics, font, x, y, boxWidth, boxHeight, 0xFF64B5F6);
 
 		for (int i = 0; i < stacks.size(); i++) {

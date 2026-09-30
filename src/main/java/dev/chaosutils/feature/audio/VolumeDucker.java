@@ -91,7 +91,9 @@ public final class VolumeDucker implements Feature {
 		}
 		if (alsoPauseMusic.get() && !focused) {
 			try {
-				client.getSoundManager().pause();
+				// Vanilla pauses everything except music and UI when the game is paused; here the
+				// music is meant to stop as well, so only the UI channel keeps playing.
+				client.getSoundManager().pauseAllExcept(SoundSource.UI);
 			} catch (Throwable ignored) {
 				// nothing to pause
 			}

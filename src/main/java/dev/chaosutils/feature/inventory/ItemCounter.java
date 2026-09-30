@@ -190,8 +190,8 @@ public final class ItemCounter implements Feature {
 		if (scaleFactor <= 0.05F) {
 			return;
 		}
-		int hotbarLeft = graphics.getScaledWindowWidth() / 2 - 91;
-		int hotbarTop = graphics.getScaledWindowHeight() - 22;
+		int hotbarLeft = graphics.guiWidth() / 2 - 91;
+		int hotbarTop = graphics.guiHeight() - 22;
 		Inventory inventory = player.getInventory();
 		for (int slot = 0; slot < 9; slot++) {
 			ItemStack stack = inventory.getItem(slot);

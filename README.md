@@ -112,12 +112,12 @@ src/main/java/dev/chaosutils/
 │   ├── radial/                the radial menu feature + screen
 │   ├── hud/ visual/ inventory/ chat/ audio/ qol/ performance/
 ├── gui/                       click GUI, component toolkit, theme, HUD editor, sub-screens
-├── mixin/                     9 small, read-only integrations (see docs/API_NOTES.md)
+├── mixin/                     10 small, read-only integrations + 1 accessor (see docs/API_NOTES.md)
 └── util/                      animation, drawing, projection, item/enchant/sound lookup, positions
 ```
 
-`docs/API_NOTES.md` documents every 1.21.11 mapping decision, the mixin targets, the few
-signatures worth re-checking after a Minecraft update and the fair-play rules the code follows.
+`docs/API_NOTES.md` documents every 1.21.11 mapping decision, the mixin targets, the exact
+signatures (verified against the 1.21.11 sources) and the fair-play rules the code follows.
 
 `docs/ChaosUtils-source.md` is the same code collected into one document (one section per file,
 in a readable order) for quick reading and reviewing; regenerate it after changing code with

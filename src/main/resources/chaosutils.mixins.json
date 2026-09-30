@@ -9,6 +9,7 @@
 	"client": [
 		"AbstractContainerScreenAccessor",
 		"AbstractContainerScreenMixin",
+		"CameraAccessor",
 		"CameraMixin",
 		"DebugScreenOverlayMixin",
 		"EntityMixin",

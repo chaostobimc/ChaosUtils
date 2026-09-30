@@ -112,9 +112,11 @@ public final class ChatMentions implements Feature {
 			}
 			try {
 				String text = message.getString();
-				if (ignoreOwnMessages.get() && sender != null && Minecraft.getInstance().player != null
-						&& sender.getName() != null
-						&& sender.getName().equals(Minecraft.getInstance().player.getGameProfile().getName())) {
+				Minecraft client = Minecraft.getInstance();
+				// Comparing the profiles themselves avoids GameProfile accessors entirely, which
+				// keeps this independent of the authlib accessor names.
+				if (ignoreOwnMessages.get() && sender != null && client.player != null
+						&& sender.equals(client.player.getGameProfile())) {
 					return;
 				}
 				if (matches(text)) {
@@ -130,8 +132,9 @@ public final class ChatMentions implements Feature {
 		String haystack = caseSensitive.get() ? text : text.toLowerCase(Locale.ROOT);
 		Minecraft client = Minecraft.getInstance();
 		if (ownName.get() && client.player != null) {
-			String name = client.player.getGameProfile().getName();
-			if (name != null && !name.isEmpty() && contains(haystack, caseSensitive.get() ? name : name.toLowerCase(Locale.ROOT))) {
+			// The player's own display name, straight from the entity - no profile accessors.
+			String name = client.player.getName().getString();
+			if (!name.isEmpty() && contains(haystack, caseSensitive.get() ? name : name.toLowerCase(Locale.ROOT))) {
 				return true;
 			}
 		}
@@ -237,7 +240,7 @@ public final class ChatMentions implements Feature {
 		float lineHeight = 11.0F * scaleFactor;
 		float padding = HudPanel.padding() * scaleFactor;
 		int index = 0;
-		float y = position.get().screenY(graphics.getScaledWindowHeight(), Math.round(TOASTS.size() * (lineHeight + 4.0F * scaleFactor)));
+		float y = position.get().screenY(graphics.guiHeight(), Math.round(TOASTS.size() * (lineHeight + 4.0F * scaleFactor)));
 		for (Toast toast : TOASTS) {
 			long age = System.currentTimeMillis() - toast.createdAt;
 			float target = age > lifetime - 1200L ? 0.0F : 1.0F;
@@ -248,12 +251,12 @@ public final class ChatMentions implements Feature {
 				continue;
 			}
 			String text = toast.text;
-			float maxWidth = graphics.getScaledWindowWidth() * 0.45F;
+			float maxWidth = graphics.guiWidth() * 0.45F;
 			while (font.width(text) * scaleFactor > maxWidth && text.length() > 8) {
 				text = text.substring(0, text.length() - 2) + "…";
 			}
 			float width = font.width(text) * scaleFactor + padding * 2.0F;
-			float x = position.get().screenX(graphics.getScaledWindowWidth(), Math.round(width));
+			float x = position.get().screenX(graphics.guiWidth(), Math.round(width));
 			float offset = (1.0F - appearance) * 8.0F;
 			int color = Render.alpha(accent.get(), Anim.clamp01(appearance));
 			HudPanel.panel(graphics, font, x, y + offset + index * (lineHeight + 4.0F * scaleFactor), width,

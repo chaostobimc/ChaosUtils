@@ -70,7 +70,7 @@ public final class EnchantLookup {
 			return "?";
 		}
 		try {
-			String path = enchantment.unwrapKey().map(key -> key.location().getPath()).orElse(null);
+			String path = enchantment.unwrapKey().map(key -> key.identifier().getPath()).orElse(null);
 			if (path == null) {
 				return "?";
 			}

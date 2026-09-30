@@ -94,8 +94,8 @@ public final class SoundRadar implements Feature {
 			return;
 		}
 		float radarRadius = radius.getFloat() * HudPanel.scale();
-		float centerX = position.get().screenX(graphics.getScaledWindowWidth(), Math.round(radarRadius * 2.0F)) + radarRadius;
-		float centerY = position.get().screenY(graphics.getScaledWindowHeight(), Math.round(radarRadius * 2.0F)) + radarRadius;
+		float centerX = position.get().screenX(graphics.guiWidth(), Math.round(radarRadius * 2.0F)) + radarRadius;
+		float centerY = position.get().screenY(graphics.guiHeight(), Math.round(radarRadius * 2.0F)) + radarRadius;
 		int styleValue = style.get();
 		List<SoundTracker.Entry> entries = collect(client.player);
 		if (entries.isEmpty() && styleValue == 1) {
@@ -145,13 +145,15 @@ public final class SoundRadar implements Feature {
 			Render.text(graphics, font, "L", centerX - radarRadius - 9.0F, centerY - 4.0F, 0x80FFFFFF, false);
 			Render.text(graphics, font, "R", centerX + radarRadius + 3.0F, centerY - 4.0F, 0x80FFFFFF, false);
 		}
-		double maxDistance = maxDistance.get();
+		// Note: "range" instead of "maxDistance" - a local variable with the field's name would
+		// shadow the setting inside its own initialiser.
+		double range = maxDistance.get();
 		Font font = Minecraft.getInstance().font;
 		int index = 0;
 		for (SoundTracker.Entry entry : entries) {
 			float bearing = Projection.bearingTo(entry.position().x, entry.position().z);
 			double distance = Projection.distanceTo(entry.position().x, entry.position().y, entry.position().z);
-			float fraction = (float) Math.min(1.0, distance / Math.max(1.0, maxDistance));
+			float fraction = (float) Math.min(1.0, distance / Math.max(1.0, range));
 			SoundClasses.Kind kind = SoundClasses.classify(entry.path());
 			float ageFade = Anim.clamp01(1.0F - entry.ageSeconds() / (float) Math.max(0.5, maxAge.get()));
 			float size = 3.0F + Anim.clamp01(entry.volume()) * 2.5F;
