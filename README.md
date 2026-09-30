@@ -127,10 +127,22 @@ src/main/java/dev/chaosutils/
 │   ├── radial/                the radial menu feature + screen
 │   ├── hud/ visual/ inventory/ chat/ audio/ qol/ performance/
 ├── gui/                       click GUI, component toolkit, theme, backdrop, HUD editor, sub-screens
-├── mixin/                     10 small, read-only integrations + 1 accessor (see docs/API_NOTES.md)
-├── tools/                     mixin_check.py - verifies every mixin handler against the Minecraft sources
+├── mixin/                     10 small, read-only integrations + 2 accessors (see docs/API_NOTES.md)
 └── util/                      animation, drawing, projection, item/enchant/sound lookup, positions
 ```
+
+### Development tools
+
+No build needed to catch the mistakes that stop javac early:
+
+| Tool | What it checks |
+| --- | --- |
+| `python3 tools/java_syntax_check.py --all` | parses every source file (tree-sitter) and reports syntax errors, including switch rules whose body is a jump statement |
+| `python3 tools/java_call_check.py` | argument counts and argument *types* of all internal helper calls, constructor arities of own classes, and whether a referenced member exists |
+| `python3 tools/mixin_check.py --mirror <mc-sources>` | compares every mixin handler with the real target method (`require = 1`) |
+| `python3 tools/bundle_source.py` | regenerates `docs/ChaosUtils-source.md` |
+| `python3 tools/make_ui_icons.py` | regenerates the interface icon atlas (`--preview out.png` renders it) |
+| `python3 tools/mock_clickgui.py` | renders `docs/preview-clickgui.png`, the interface mock with the real metrics |
 
 `docs/API_NOTES.md` documents every 1.21.11 mapping decision, the mixin targets, the exact
 signatures (verified against the 1.21.11 sources) and the fair-play rules the code follows.

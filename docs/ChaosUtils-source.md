@@ -7828,8 +7828,8 @@ public final class Ui {
 		if (span <= 2.0F || alpha <= 0.01F) {
 			return;
 		}
-		float peak = Render.alpha(theme.accent, 0.85F * alpha);
-		float clear = Render.alpha(theme.accent, 0.0F);
+		int peak = Render.alpha(theme.accent, 0.85F * alpha);
+		int clear = Render.alpha(theme.accent, 0.0F);
 		float half = span * 0.5F;
 		Render.horizontalGradient(graphics, x + inset, y + 1.0F, half, height, clear, peak);
 		Render.horizontalGradient(graphics, x + inset + half, y + 1.0F, half, height, peak, clear);
