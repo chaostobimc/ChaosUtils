@@ -113,6 +113,10 @@ src/main/java/dev/chaosutils/
 `docs/API_NOTES.md` documents every 1.21.11 mapping decision, the mixin targets, the few
 signatures worth re-checking after a Minecraft update and the fair-play rules the code follows.
 
+`docs/ChaosUtils-source.md` is the same code collected into one document (one section per file,
+in a readable order) for quick reading and reviewing; regenerate it after changing code with
+`python3 tools/bundle_source.py`.
+
 ---
 
 ## Notes on performance
