@@ -26,6 +26,7 @@ public final class ThemeModule {
 	public static Setting.Number shadowStrength;
 	public static Setting.Toggle windowShadow;
 	public static Setting.Toggle animations;
+	public static Setting.Toggle bundledFont;
 
 	private ThemeModule() {
 	}
@@ -36,7 +37,7 @@ public final class ThemeModule {
 			return;
 		}
 		MODULE = ModuleManager.register(new Module(ID, "Click GUI", "Appearance, animations and behaviour of the ChaosUtils interface.", Category.QOL, true));
-		accent = (Setting.Color) MODULE.add(new Setting.Color("accent", "Accent colour", "Primary highlight colour used across the UI.", 0xFF7C5CFF));
+		accent = (Setting.Color) MODULE.add(new Setting.Color("accent", "Accent colour", "Primary highlight colour used across the UI.", 0xFF8B5CF6));
 		backgroundStyle = (Setting.Choice) MODULE.add(new Setting.Choice("background", "Backdrop", "How the GUI background is drawn.", 0, "Dark gradient", "Blur + gradient", "Flat", "Transparent"));
 		backgroundColor = (Setting.Color) MODULE.add(new Setting.Color("background_color", "Backdrop tint", "Tint layered on top of the screen behind the GUI.", 0xCC101018));
 		backgroundOpacity = (Setting.Number) MODULE.add(new Setting.Number("background_opacity", "Backdrop opacity", "Strength of the backdrop tint.", 0.8, 0.0, 1.0, 0.02));
@@ -52,6 +53,8 @@ public final class ThemeModule {
 		windowShadow = (Setting.Toggle) MODULE.add(new Setting.Toggle("window_shadow", "Drop shadow", "Draw a soft shadow under floating windows so they lift off the world.", true));
 		shadowStrength = (Setting.Number) MODULE.add(new Setting.Number("shadow_strength", "Shadow strength", "Opacity of the drop shadow.", 1.0, 0.0, 2.0, 0.05, "x"));
 		animations = (Setting.Toggle) MODULE.add(new Setting.Toggle("animations", "Animations", "Smooth opening, hover, expand and scroll animations.", true));
+		bundledFont = (Setting.Toggle) MODULE.add(new Setting.Toggle("bundled_font", "Modern font", "Use the bundled sans-serif face for the interface instead of the pixelated vanilla font.", true));
+		bundledFont.onChanged(value -> dev.chaosutils.ChaosUtils.USE_CUSTOM_FONT = value);
 
 		// The theme tokens are cached for the whole frame, so every change has to invalidate them.
 		for (Setting<?> setting : MODULE.settings()) {

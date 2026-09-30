@@ -44,6 +44,18 @@ public final class Keybinds {
 		addWaypoint = register("add_waypoint", GLFW.GLFW_KEY_UNKNOWN);
 	}
 
+	/** Every ChaosUtils hotkey, in the order they are shown in the interface. */
+	public static java.util.List<KeyMapping> all() {
+		java.util.List<KeyMapping> mappings = new java.util.ArrayList<>();
+		for (KeyMapping mapping : new KeyMapping[] {openGui, radialMenu, zoom, freeLook, searchContainer,
+				copyCoordinates, chatHistory, screenshotPopup, toggleGamma, panicToggle, addWaypoint}) {
+			if (mapping != null) {
+				mappings.add(mapping);
+			}
+		}
+		return mappings;
+	}
+
 	private static KeyMapping register(String name, int defaultKey) {
 		KeyMapping mapping = new KeyMapping(
 				"key.chaosutils." + name,

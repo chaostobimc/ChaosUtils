@@ -10,6 +10,21 @@ nothing to detect, because there is no automation to detect.
 
 ---
 
+## Interface
+
+![Click GUI](docs/preview-clickgui.png)
+
+The click GUI is a single, opaque, draggable panel: a module rail on the left, a searchable list of
+expandable module cards on the right, one accent colour and hairline borders throughout. It uses a
+bundled sans-serif face (Poppins, OFL) and a vector icon atlas instead of the vanilla pixel font, and
+every colour, radius and animation speed is a live setting.
+
+`docs/preview-clickgui.png` is rendered by `tools/mock_clickgui.py`, which uses the same metrics,
+colours, icons and fonts as the Java code - handy for reviewing a layout change without launching
+the game.
+
+---
+
 ## Feature overview (23 modules, ~120 settings)
 
 **Radial menu (the centrepiece)**

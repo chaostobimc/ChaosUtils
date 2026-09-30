@@ -57,6 +57,8 @@ public final class ChaosScreens {
 			}
 			float contentX = window().x() + 18.0F;
 			float top = window().y() + window().titleHeight() + 14.0F;
+			add(new UiWidgets.Hairline(window().x() + 18.0F, window().y() + window().titleHeight() - 1.0F,
+					window().width() - 36.0F));
 			float listWidth = 220.0F;
 
 			UiWidgets.Label entriesLabel = new UiWidgets.Label("Slices", theme.textFaint);
@@ -208,7 +210,7 @@ public final class ChaosScreens {
 			Render.boldText(graphics, UiWidgets.font(), "Radial Menu", window().x() + 16.0F, window().y() + 13.0F,
 					Render.alpha(theme.text, alpha), false);
 			String subtitle = ChaosConfig.RADIAL_ELEMENTS.size() + " slices  ·  hold " + radialKeyName() + " in game";
-			Render.text(graphics, UiWidgets.font(), subtitle, window().right() - 16.0F - UiWidgets.font().width(subtitle),
+			Render.text(graphics, UiWidgets.font(), subtitle, window().right() - 16.0F - Render.textWidth(UiWidgets.font(), subtitle),
 					window().y() + 13.0F, Render.alpha(theme.textFaint, alpha), false);
 		}
 
@@ -403,8 +405,10 @@ public final class ChaosScreens {
 			float contentX = window().x() + 18.0F;
 			float contentWidth = window().width() - 36.0F;
 			float top = window().y() + window().titleHeight() + 14.0F;
+			add(new UiWidgets.Hairline(window().x() + 18.0F, window().y() + window().titleHeight() - 1.0F,
+					window().width() - 36.0F));
 
-			EditBox box = new EditBox(UiWidgets.font(), 0, 0, 200, 14, Component.literal("Search"));
+			EditBox box = new EditBox(UiFonts.font(), 0, 0, 200, 14, Component.literal("Search"));
 			box.setBordered(false);
 			box.setTextColor(0xFFF4F5FA);
 			box.setHint(Component.literal("Search chat…"));
@@ -429,7 +433,7 @@ public final class ChaosScreens {
 			float chipX = search.right() + 10.0F;
 			for (int i = 0; i < filters.length; i++) {
 				int index = i;
-				int width = UiWidgets.font().width(filters[i]) + 18;
+				int width = Render.textWidth(UiWidgets.font(), filters[i]) + 18;
 				UiWidgets.Button chip = new UiWidgets.Button(filters[i],
 						kindFilter == index ? UiWidgets.Button.Variant.PRIMARY : UiWidgets.Button.Variant.GHOST,
 						theme.accent, () -> {
@@ -516,7 +520,7 @@ public final class ChaosScreens {
 			Render.boldText(graphics, UiWidgets.font(), "Chat History", window().x() + 16.0F, window().y() + 13.0F,
 					Render.alpha(theme.text, alpha), false);
 			String subtitle = "survives reconnects  ·  stored locally";
-			Render.text(graphics, UiWidgets.font(), subtitle, window().right() - 16.0F - UiWidgets.font().width(subtitle),
+			Render.text(graphics, UiWidgets.font(), subtitle, window().right() - 16.0F - Render.textWidth(UiWidgets.font(), subtitle),
 					window().y() + 13.0F, Render.alpha(theme.textFaint, alpha), false);
 		}
 
@@ -584,6 +588,8 @@ public final class ChaosScreens {
 			float contentX = window().x() + 18.0F;
 			float contentWidth = window().width() - 36.0F;
 			float top = window().y() + window().titleHeight() + 14.0F;
+			add(new UiWidgets.Hairline(window().x() + 18.0F, window().y() + window().titleHeight() - 1.0F,
+					window().width() - 36.0F));
 
 			files.clear();
 			files.addAll(ScreenshotManager.recent(50));
@@ -659,7 +665,7 @@ public final class ChaosScreens {
 			Render.boldText(graphics, UiWidgets.font(), "Screenshots", window().x() + 16.0F, window().y() + 13.0F,
 					Render.alpha(theme.text, alpha), false);
 			String subtitle = "everything stays on this machine";
-			Render.text(graphics, UiWidgets.font(), subtitle, window().right() - 16.0F - UiWidgets.font().width(subtitle),
+			Render.text(graphics, UiWidgets.font(), subtitle, window().right() - 16.0F - Render.textWidth(UiWidgets.font(), subtitle),
 					window().y() + 13.0F, Render.alpha(theme.textFaint, alpha), false);
 		}
 
@@ -726,6 +732,8 @@ public final class ChaosScreens {
 			float contentX = window().x() + 18.0F;
 			float contentWidth = window().width() - 36.0F;
 			float top = window().y() + window().titleHeight() + 14.0F;
+			add(new UiWidgets.Hairline(window().x() + 18.0F, window().y() + window().titleHeight() - 1.0F,
+					window().width() - 36.0F));
 
 			countLabel = new UiWidgets.Label("", theme.textFaint);
 			countLabel.setBounds(contentX, top, contentWidth, 12.0F);
@@ -784,7 +792,7 @@ public final class ChaosScreens {
 			Render.boldText(graphics, UiWidgets.font(), "Waypoints", window().x() + 16.0F, window().y() + 13.0F,
 					Render.alpha(theme.text, alpha), false);
 			String subtitle = "drawn client-side only";
-			Render.text(graphics, UiWidgets.font(), subtitle, window().right() - 16.0F - UiWidgets.font().width(subtitle),
+			Render.text(graphics, UiWidgets.font(), subtitle, window().right() - 16.0F - Render.textWidth(UiWidgets.font(), subtitle),
 					window().y() + 13.0F, Render.alpha(theme.textFaint, alpha), false);
 		}
 

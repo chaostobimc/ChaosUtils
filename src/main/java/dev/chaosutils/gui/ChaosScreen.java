@@ -156,9 +156,14 @@ public abstract class ChaosScreen extends Screen {
 		return UiTheme.get();
 	}
 
-	/** Font accessor for widgets. */
+	/** Font accessor for widgets: the bundled interface face, or vanilla as a fallback. */
 	public Font font() {
-		return this.font;
+		return UiFonts.font();
+	}
+
+	/** Font that can render the given text (exotic chat text stays on the vanilla font). */
+	public Font font(String text) {
+		return UiFonts.pick(text);
 	}
 
 	protected UiWindow window() {
@@ -229,8 +234,14 @@ public abstract class ChaosScreen extends Screen {
 		}
 	}
 
-	/** Rebuilds the layout while keeping the window position and size. */
+	/**
+	 * Rebuilds the layout while keeping the window position and size.
+	 *
+	 * <p>The registered text fields are dropped first: a rebuild creates new ones, and a screen
+	 * that refreshes on every toggle would otherwise pile up dead widgets (and draw them).
+	 */
 	protected void refresh() {
+		clearInputs();
 		content.clear();
 		layoutX = window.x();
 		layoutY = window.y();
@@ -319,7 +330,7 @@ public abstract class ChaosScreen extends Screen {
 
 	/** Text editor dialog used by string settings and by the list screens. */
 	public void openTextModal(String title, String initial, int maxLength, Consumer<String> onAccept) {
-		EditBox box = new EditBox(this.font, 0, 0, 200, 16, Component.literal(title));
+		EditBox box = new EditBox(UiFonts.font(), 0, 0, 200, 16, Component.literal(title));
 		box.setBordered(false);
 		box.setTextColor(0xFFF4F5FA);
 		UiModals.TextPrompt prompt = new UiModals.TextPrompt(title, "Type here…", initial, maxLength, onAccept, box);
@@ -404,7 +415,8 @@ public abstract class ChaosScreen extends Screen {
 		renderHeader(graphics, windowAlpha);
 		window.renderCloseButton(graphics, theme(), windowAlpha);
 
-		Render.scissor(graphics, layoutBodyX() + offsetX, layoutBodyY() + offsetY, window.bodyWidth(), window.bodyHeight());
+		Render.scissor(graphics, layoutX + offsetX + 1.0F, layoutY + offsetY + 1.0F,
+				window.width() - 2.0F, window.height() - 2.0F);
 		graphics.pose().pushMatrix();
 		graphics.pose().translate(offsetX, offsetY);
 		for (UiComponent component : content) {
@@ -461,7 +473,8 @@ public abstract class ChaosScreen extends Screen {
 
 	/** Window header text; screens can replace it to show context. */
 	protected void renderHeader(GuiGraphics graphics, float alpha) {
-		Render.text(graphics, this.font, this.title.getString(), window.x() + 16.0F, window.y() + 13.0F,
+		String text = this.title.getString();
+		Render.boldText(graphics, font(text), text, window.x() + 18.0F, window.titleCenterY() - 4.0F,
 				Render.alpha(theme().text, alpha), false);
 	}
 

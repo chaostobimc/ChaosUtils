@@ -6,10 +6,14 @@ import dev.chaosutils.util.Render;
 /**
  * Cached design tokens of the ChaosUtils interface.
  *
- * <p>Every colour the interface uses is derived here from the live theme settings, so the whole
- * look can be re-tinted from a single place and the click GUI can never end up with a colour that
- * does not exist. The instance is rebuilt whenever a theme setting changes
- * ({@link #invalidate()}), never per frame.
+ * <p>Every colour the interface uses is derived here from the live theme settings, so the whole look
+ * can be re-tinted from a single place and the click GUI can never end up with a colour that does
+ * not exist. The instance is rebuilt whenever a theme setting changes ({@link #invalidate()}), never
+ * per frame.
+ *
+ * <p>The palette itself is deliberately narrow: near-black neutral surfaces, one accent colour and
+ * three text weights. Contrast comes from the surfaces and the hairlines, not from extra colours -
+ * that is what keeps a window with dozens of controls readable.
  */
 public final class UiTheme {
 	// ------------------------------------------------------------------ accent
@@ -76,45 +80,45 @@ public final class UiTheme {
 
 	private UiTheme() {
 		accent = ThemeModule.accent.get() | 0xFF000000;
-		accentBright = Render.mix(accent, 0xFFFFFFFF, 0.22F);
-		accentSoft = Render.alpha(accent, 0.30F);
-		accentFaint = Render.alpha(accent, 0.13F);
-		accentGlow = Render.alpha(accent, 0.55F);
-		onAccent = luminance(accent) > 0.62F ? 0xFF0B0B12 : 0xFFFFFFFF;
+		accentBright = Render.mix(accent, 0xFFFFFFFF, 0.30F);
+		accentSoft = Render.alpha(accent, 0.26F);
+		accentFaint = Render.alpha(accent, 0.11F);
+		accentGlow = Render.alpha(accent, 0.45F);
+		onAccent = luminance(accent) > 0.62F ? 0xFF0A0B10 : 0xFFFFFFFF;
 
 		int tint = ThemeModule.backgroundColor.get();
 		background = Render.alpha(tint, ThemeModule.backgroundOpacity.getFloat());
 
-		int shell = Render.mix(0xFF0B0B12, tint, 0.35F);
-		windowTop = Render.alpha(Render.mix(shell, 0xFFFFFFFF, 0.035F), 0.97F);
-		windowBottom = Render.alpha(Render.mix(shell, 0xFF000000, 0.18F), 0.97F);
-		sidebarTop = Render.alpha(Render.mix(shell, 0x00000000, 0.35F), 0.92F);
-		sidebarBottom = Render.alpha(Render.mix(shell, accent, 0.05F), 0.92F);
+		// Opaque, near-black surfaces. Nothing behind the window should bleed through the panels:
+		// translucency is reserved for hover states and the backdrop.
+		windowTop = 0xFC0D1017;
+		windowBottom = 0xFB0A0C12;
+		sidebarTop = 0xFF090B11;
+		sidebarBottom = 0xFF0A0D13;
 
-		// Surfaces are deliberately solid: nothing in the interface is supposed to look like the
-		// world is shining through it, which is what made the panels hard to read.
-		surface = 0xEC15151F;
-		surfaceHover = 0xF61D1D2A;
-		card = 0xF01A1A27;
-		cardHover = 0xFA232336;
-		cardActive = Render.alpha(Render.mix(0xFF22223A, accent, 0.22F), 1.0F);
-		track = 0x992F2F45;
-		trackHover = 0xBB3A3A55;
+		surface = 0xFF0C0F16;
+		surfaceHover = 0xFF121620;
+		card = 0xFF10141C;
+		cardHover = 0xFF161B26;
+		cardActive = Render.mix(0xFF161B26, accent, 0.22F) | 0xFF000000;
+		track = 0xFF212736;
+		trackHover = 0xFF2A3143;
 
-		outline = 0x2AFFFFFF;
-		outlineSoft = 0x22FFFFFF;
-		outlineStrong = 0x4DFFFFFF;
+		outline = 0xFF1A2030;
+		outlineSoft = 0xFF141924;
+		outlineStrong = 0xFF2C3448;
 
-		text = 0xFFF4F5FA;
-		textDim = 0xFFA8AABF;
-		textFaint = 0xFF6E7086;
-		positive = 0xFF57D98A;
-		negative = 0xFFF0686A;
-		warning = 0xFFF2B23E;
+		text = 0xFFF6F7FB;
+		textDim = 0xFFA6ADC0;
+		textFaint = 0xFF6A7286;
+		positive = 0xFF4ADE80;
+		negative = 0xFFF87171;
+		warning = 0xFFFBBF24;
 
-		radius = ThemeModule.cornerRadius.getFloat() + 6.0F;
-		radiusCard = ThemeModule.cornerRadius.getFloat() + 3.0F;
-		radiusControl = Math.max(3.0F, ThemeModule.cornerRadius.getFloat());
+		float corner = ThemeModule.cornerRadius.getFloat();
+		radius = corner + 2.0F;
+		radiusCard = corner;
+		radiusControl = Math.max(4.0F, corner - 2.0F);
 
 		animSpeed = ThemeModule.animationSpeed.getFloat();
 		shadowStrength = ThemeModule.shadowStrength.getFloat();
@@ -130,9 +134,9 @@ public final class UiTheme {
 		keybindHints = ThemeModule.showKeybindHints.get();
 		backdropStyle = ThemeModule.backgroundStyle.get();
 
-		panel = Render.alpha(Render.mix(shell, 0xFFFFFFFF, 0.05F), 0.92F);
-		panelAlt = Render.alpha(Render.mix(shell, 0xFFFFFFFF, 0.08F), 0.92F);
-		panelHover = Render.alpha(Render.mix(shell, 0xFFFFFFFF, 0.13F), 0.95F);
+		panel = 0xFF0C0F16;
+		panelAlt = 0xFF10141C;
+		panelHover = 0xFF161B26;
 	}
 
 	public static UiTheme get() {

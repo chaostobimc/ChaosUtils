@@ -410,16 +410,30 @@ public final class Render {
 
 	// ------------------------------------------------------------ text helpers
 
+	/**
+	 * Resolves the face to use for a string. Callers pass the vanilla font object whenever they only
+	 * need "a font"; the bundled interface face then takes over, and text it cannot render (say a
+	 * CJK chat line) stays on the vanilla face instead of turning into empty boxes.
+	 */
+	public static net.minecraft.client.gui.Font resolve(net.minecraft.client.gui.Font font, String value) {
+		net.minecraft.client.gui.Font vanilla = net.minecraft.client.Minecraft.getInstance().font;
+		if (font != null && font != vanilla) {
+			return font;
+		}
+		return dev.chaosutils.gui.UiFonts.pick(value);
+	}
+
 	/** Truncates with an ellipsis so it fits {@code maxWidth} device pixels. */
 	public static String ellipsize(net.minecraft.client.gui.Font font, String value, float maxWidth) {
 		if (value == null) {
 			return "";
 		}
-		if (font.width(value) <= maxWidth) {
+		net.minecraft.client.gui.Font face = resolve(font, value);
+		if (face.width(value) <= maxWidth) {
 			return value;
 		}
 		String result = value;
-		while (result.length() > 4 && font.width(result + "…") > maxWidth) {
+		while (result.length() > 4 && face.width(result + "…") > maxWidth) {
 			result = result.substring(0, result.length() - 2);
 		}
 		return result + "…";
@@ -431,8 +445,15 @@ public final class Render {
 	 */
 	public static void boldText(GuiGraphics graphics, net.minecraft.client.gui.Font font, String value, float x, float y,
 			int color, boolean shadow) {
-		text(graphics, font, value, x, y, color, shadow);
-		text(graphics, font, value, x + 0.7F, y, color, shadow);
+		net.minecraft.client.gui.Font vanilla = net.minecraft.client.Minecraft.getInstance().font;
+		net.minecraft.client.gui.Font bold = dev.chaosutils.gui.UiFonts.bold();
+		if (bold == vanilla || resolve(font, value) == vanilla) {
+			// no bundled semibold face - emulate the vanilla bold by drawing twice
+			text(graphics, font, value, x, y, color, shadow);
+			text(graphics, font, value, x + 0.7F, y, color, shadow);
+			return;
+		}
+		graphics.drawString(bold, value, Math.round(x), Math.round(y), color, shadow);
 	}
 
 	/** Horizontal gradient text, drawn in three-character runs to keep the draw count tiny. */
@@ -499,7 +520,7 @@ public final class Render {
 	// ------------------------------------------------------------------ text
 
 	public static void text(GuiGraphics graphics, net.minecraft.client.gui.Font font, String value, float x, float y, int color, boolean shadow) {
-		graphics.drawString(font, value, Math.round(x), Math.round(y), color, shadow);
+		graphics.drawString(resolve(font, value), value, Math.round(x), Math.round(y), color, shadow);
 	}
 
 	public static void text(GuiGraphics graphics, net.minecraft.client.gui.Font font, net.minecraft.network.chat.Component value, float x, float y, int color, boolean shadow) {
@@ -507,11 +528,33 @@ public final class Render {
 	}
 
 	public static void centeredText(GuiGraphics graphics, net.minecraft.client.gui.Font font, String value, float centerX, float y, int color, boolean shadow) {
-		graphics.drawCenteredString(font, value, Math.round(centerX), Math.round(y), color);
+		net.minecraft.client.gui.Font face = resolve(font, value);
+		graphics.drawString(face, value, Math.round(centerX - face.width(value) * 0.5F), Math.round(y), color, shadow);
 	}
 
 	public static int textWidth(net.minecraft.client.gui.Font font, String value) {
-		return font.width(value);
+		return resolve(font, value).width(value);
+	}
+
+	/**
+	 * Text at a different visual size. The bundled face has one size, so larger titles are drawn
+	 * with a scale transform instead of a second font - which also keeps the glyph atlas small.
+	 */
+	public static void textScaled(GuiGraphics graphics, net.minecraft.client.gui.Font font, String value,
+			float x, float y, float scale, int color, boolean shadow) {
+		if (value == null || value.isEmpty() || scale <= 0.0F) {
+			return;
+		}
+		graphics.pose().pushMatrix();
+		graphics.pose().translate(x, y);
+		graphics.pose().scale(scale, scale);
+		text(graphics, font, value, 0.0F, 0.0F, color, shadow);
+		graphics.pose().popMatrix();
+	}
+
+	/** Width of a string at a different visual size. */
+	public static float scaledWidth(net.minecraft.client.gui.Font font, String value, float scale) {
+		return textWidth(font, value) * scale;
 	}
 
 	public static void item(GuiGraphics graphics, net.minecraft.world.item.ItemStack stack, float x, float y) {

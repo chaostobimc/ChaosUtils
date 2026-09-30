@@ -48,6 +48,11 @@ public final class ChaosConfig {
 	private ChaosConfig() {
 	}
 
+	/** Location of the configuration file on disk. */
+	public static Path path() {
+		return FILE;
+	}
+
 	public static void markDirty() {
 		dirty = true;
 	}

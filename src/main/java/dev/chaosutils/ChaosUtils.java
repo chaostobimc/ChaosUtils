@@ -28,7 +28,9 @@ import org.slf4j.LoggerFactory;
 public final class ChaosUtils implements ClientModInitializer {
 	public static final String MOD_ID = "chaosutils";
 	/** Shown in the GUI header and logged on startup, so the running build is identifiable. */
-	public static final String BUILD_TAG = "ui-3";
+	public static final String BUILD_TAG = "ui-4";
+	/** Toggled by the theme settings; keeps the vanilla font when switched off. */
+	public static boolean USE_CUSTOM_FONT = true;
 	public static final Logger LOGGER = LoggerFactory.getLogger("ChaosUtils");
 
 	private static final Set<Category> HIDDEN_CATEGORIES = EnumSet.noneOf(Category.class);
@@ -42,6 +44,10 @@ public final class ChaosUtils implements ClientModInitializer {
 		LOGGER.info("ChaosUtils is starting (client side only)");
 		ChaosConfig.load();
 		Keybinds.init();
+		// The theme module owns the "modern font" switch; apply the stored choice before the
+		// first screen is built.
+		dev.chaosutils.feature.qol.ThemeModule.register();
+		USE_CUSTOM_FONT = dev.chaosutils.feature.qol.ThemeModule.bundledFont.get();
 		registerApiHooks();
 		FeatureRegistry.registerAll();
 		Features.initHud();

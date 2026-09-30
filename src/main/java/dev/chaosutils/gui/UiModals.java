@@ -634,7 +634,7 @@ public final class UiModals {
 	 */
 	public static ColorPicker colorPicker(Setting.Color setting, Consumer<EditBox> registerInput) {
 		ColorPicker picker = new ColorPicker(setting);
-		EditBox hexBox = new EditBox(net.minecraft.client.Minecraft.getInstance().font, 0, 0, 78, 16,
+		EditBox hexBox = new EditBox(UiFonts.font(), 0, 0, 78, 16,
 				Component.literal(setting.label));
 		hexBox.setBordered(false);
 		hexBox.setTextColor(0xFFF4F5FA);

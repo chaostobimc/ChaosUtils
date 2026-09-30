@@ -28,8 +28,12 @@ public final class UiWidgets {
 	private UiWidgets() {
 	}
 
+	/**
+	 * The font every widget lays out with. Same face the render helpers use, so measured widths
+	 * and drawn glyphs can never disagree.
+	 */
 	public static Font font() {
-		return Minecraft.getInstance().font;
+		return UiFonts.font();
 	}
 
 	// =============================================================== primitives
@@ -1140,6 +1144,22 @@ public final class UiWidgets {
 		}
 	}
 
+	/** Plain hairline; separates the header of a window from its content. */
+	public static final class Hairline extends UiComponent {
+		public Hairline(float x, float y, float width) {
+			setBounds(x, y, width, 1.0F);
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			Render.rect(graphics, x, y, width, 1.0F, Render.alpha(UiTheme.get().outline, alpha));
+		}
+	}
+
 	/** Small caption used between groups of settings. */
 	public static final class SectionHeader extends UiComponent {
 		private final String text;
@@ -1168,6 +1188,7 @@ public final class UiWidgets {
 		private int color;
 		private boolean centered;
 		private boolean bold;
+		private float scale = 1.0F;
 
 		public Label(String text, int color) {
 			this.text = text;
@@ -1181,6 +1202,12 @@ public final class UiWidgets {
 
 		public Label bold() {
 			this.bold = true;
+			return this;
+		}
+
+		/** Draws the label larger; used for the headline of a screen. */
+		public Label big() {
+			this.scale = 1.45F;
 			return this;
 		}
 
@@ -1198,8 +1225,13 @@ public final class UiWidgets {
 			if (alpha <= 0.01F) {
 				return;
 			}
-			String value = Render.ellipsize(font(), text, width);
+			String value = Render.ellipsize(font(), text, width / scale);
 			int argb = Render.alpha(color, alpha);
+			if (scale != 1.0F) {
+				float drawX = centered ? centerX() - Render.textWidth(font(), value) * scale * 0.5F : x;
+				Render.textScaled(graphics, font(), value, drawX, y + appearOffset(), scale, argb, false);
+				return;
+			}
 			if (centered) {
 				if (bold) {
 					Render.boldText(graphics, font(), value, centerX() - font().width(value) * 0.5F, y + appearOffset(), argb, false);
