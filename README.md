@@ -71,9 +71,15 @@ nothing to detect, because there is no automation to detect.
 ## Building
 
 ```bash
-# Gradle 9.2.1 (or use the wrapper once generated with `gradle wrapper`)
-gradle build
+./gradlew build        # Linux / macOS
+gradlew.bat build      # Windows
 ```
+
+The complete Gradle wrapper is part of the repository (Gradle 9.2.1 — the version Loom 1.14
+requires), so nothing has to be installed by hand. If the wrapper cannot download the
+distribution (proxy, firewall, antivirus or a flaky connection — `Cannot use connection to
+Gradle distribution … as it has been stopped`), see `docs/BUILD_TROUBLESHOOTING.md`: it lists the
+pre-seed/offline ways to install the distribution and how to build with a system Gradle instead.
 
 The compiled jar lands in `build/libs/chaosutils-1.0.0.jar` - drop it into `.minecraft/mods`
 together with Fabric API.

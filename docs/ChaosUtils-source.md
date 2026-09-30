@@ -102,7 +102,7 @@ org.gradle.parallel=true
 # 1.21.11 is the last obfuscated Minecraft release; Loom >= 1.14 is required for it.
 minecraft_version=1.21.11
 loader_version=0.19.5
-loom_version=1.14-SNAPSHOT
+loom_version=1.14.10
 fabric_version=0.141.6+1.21.11
 
 # Mod Properties
@@ -117,7 +117,8 @@ archives_base_name=chaosutils
 distributionBase=GRADLE_USER_HOME
 distributionPath=wrapper/dists
 distributionUrl=https\://services.gradle.org/distributions/gradle-9.2.1-bin.zip
-networkTimeout=10000
+distributionSha256Sum=72f44c9f8ebcb1af43838f45ee5c4aa9c5444898b3468ab3f4af7b6076c5bc3f
+networkTimeout=60000
 validateDistributionUrl=true
 zipStoreBase=GRADLE_USER_HOME
 zipStorePath=wrapper/dists

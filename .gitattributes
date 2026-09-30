@@ -1,0 +1,7 @@
+# Keep the wrapper scripts usable on every platform: the POSIX script must keep LF
+# line endings even when a Windows checkout would normalise them to CRLF.
+* text=auto
+gradlew text eol=lf
+gradlew.bat text eol=crlf
+*.jar binary
+*.png binary

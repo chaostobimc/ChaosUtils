@@ -9,8 +9,8 @@ Minecraft (or of the mappings) is a mechanical job instead of a hunt.
 | Part | Value | Why |
 | --- | --- | --- |
 | Mappings | `loom.officialMojangMappings()` | 1.21.11 renamed the platform classes (`ResourceLocation` → `Identifier`, …); the official mappings are the ones NeoForge/Fabric document for this version. |
-| Loom | 1.14 (`net.fabricmc.fabric-loom-remap`) | 1.21.11 is the **last obfuscated** Minecraft release; Loom < 1.14 will not build it. |
-| Gradle / Java | 9.2.1 / 21 | Required by Loom 1.14 and Minecraft 1.21.11. |
+| Loom | `1.14.10` (`net.fabricmc.fabric-loom-remap`) | 1.21.11 is the **last obfuscated** Minecraft release; Loom < 1.14 will not build it, and the `-remap` plugin id is the one for obfuscated versions (Loom 1.14 release notes). |
+| Gradle / Java | 9.2.1 (wrapper committed) / 21 | Loom 1.14 requires Gradle 9.2+; the wrapper jar in this repo is the official 9.2.1 one (checksum in `docs/BUILD_TROUBLESHOOTING.md`). |
 | Loader / API | `0.19.5+` / `0.141.6+1.21.11` | First loader line that supports 1.21.11, matching Fabric API build. |
 | Config library | none — ChaosUtils ships its own JSON store and click GUI | Cloth Config for 1.21.11 is a moving target and the mod already needs a custom, animated interface; the built-in store is smaller, dependency-free and rename-safe. |
 
