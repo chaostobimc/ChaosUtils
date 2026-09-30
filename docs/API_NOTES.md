@@ -1,0 +1,116 @@
+# ChaosUtils — 1.21.11 API notes
+
+Everything in this document was verified against the Minecraft 1.21.11 / Fabric API
+`0.141.6+1.21.11` sources while the mod was written. It exists so that a future update of
+Minecraft (or of the mappings) is a mechanical job instead of a hunt.
+
+## Toolchain
+
+| Part | Value | Why |
+| --- | --- | --- |
+| Mappings | `loom.officialMojangMappings()` | 1.21.11 renamed the platform classes (`ResourceLocation` → `Identifier`, …); the official mappings are the ones NeoForge/Fabric document for this version. |
+| Loom | 1.14 (`net.fabricmc.fabric-loom-remap`) | 1.21.11 is the **last obfuscated** Minecraft release; Loom < 1.14 will not build it. |
+| Gradle / Java | 9.2.1 / 21 | Required by Loom 1.14 and Minecraft 1.21.11. |
+| Loader / API | `0.19.5+` / `0.141.6+1.21.11` | First loader line that supports 1.21.11, matching Fabric API build. |
+| Config library | none — ChaosUtils ships its own JSON store and click GUI | Cloth Config for 1.21.11 is a moving target and the mod already needs a custom, animated interface; the built-in store is smaller, dependency-free and rename-safe. |
+
+## Renames that affect this code base
+
+* `ResourceLocation` → `net.minecraft.resources.Identifier` (`Identifier.fromNamespaceAndPath`, `getPath`, `toString`).
+* `net.minecraft.{BlockUtil,FileUtil,Util}` → `net.minecraft.util.*`.
+* `advancements.critereon` → `criterion`.
+* `client.model` and `world.entity` are split into subpackages
+  (`.animal`, `.monster`, `.object`, `.player`, `.ambient`, `.effects`, `.projectile`, `.boat`, `.equipment`).
+  Entity and model types are imported from their new homes.
+* `RenderType` constants moved to `RenderTypes`; custom render pipelines use
+  `RenderSetup.builder(RenderPipeline)` → `RenderType.create(...)`. **ChaosUtils does not create
+  a single render type**: every overlay is drawn with `GuiGraphics#fill`/text so the entire
+  render-pipeline rework cannot break it.
+* `RenderSystem#setShaderTexture`/`getShaderTexture`, `setTextureMatrix` and `lineWidth` are gone
+  (samplers now come from `RenderSystem.getSamplerCache()`), which is another reason to stay on
+  `GuiGraphics`.
+
+## Input model (changed in 1.21.9, still current in 1.21.11)
+
+The event records live in `net.minecraft.client.input`:
+
+* `mouseClicked(MouseButtonEvent click, boolean doubleClick)`
+* `mouseReleased(MouseButtonEvent click)`
+* `mouseDragged(MouseButtonEvent click, double offsetX, double offsetY)`
+* `mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount)`
+* `keyPressed(KeyEvent input)` / `keyReleased(KeyEvent input)` / `charTyped(CharacterEvent input)`
+
+ChaosUtils deliberately only reads `MouseButtonEvent#button()` from those records; the mouse
+position is taken from the last rendered frame (`ChaosScreen`), and keyboard input that is not
+text (Escape, Enter, the hotkey capture in the settings) is polled with GLFW through
+`util/InputUtil`. That keeps the interface independent of any accessor name inside the event
+records, which is where mapping drift usually hurts.
+
+`KeyMapping` mutations in 1.21.9+: hold state is `isPressed()`, the one-shot query is
+`wasPressed()`, and the constructor takes a `KeyMapping.Category`
+(`KeyMapping.Category.MISC` for ChaosUtils). Keys are registered through
+`KeyBindingHelper.registerKeyBinding`.
+
+## Screen events (Fabric API)
+
+`Screens.getButtons(Screen)` is used to add the container-search text field, because
+`Screen#addRenderableWidget` is protected and the listener lives outside the screen class.
+`ScreenEvents.AFTER_INIT` supplies the screen instance, `Screens.getButtons` supplies the widget
+list, `Screen#getFont()` supplies the font.
+
+## HUD API (Fabric API)
+
+Every overlay is registered with `HudElementRegistry.addLast(Identifier, HudElement)`; the
+`HudElement#render(GuiGraphics, DeltaTracker)` parameters are inferred (the lambda never names
+`DeltaTracker`), so a rename of the tick counter type does not touch this code. Registering as a
+vanilla HUD element means F1 (hide HUD), HUD scale and element ordering behave exactly as the
+player expects.
+
+## Mixin targets
+
+| Mixin | Target | Notes |
+| --- | --- | --- |
+| `SoundEngineMixin` | `SoundEngine#play(SoundInstance)` | Observation only, never cancelled. |
+| `AbstractContainerScreenMixin` | `AbstractContainerScreen#render(GuiGraphics,int,int,float)` | TAIL: draws the search overlay. |
+| `AbstractContainerScreenAccessor` | `leftPos`, `topPos`, `imageWidth`, `imageHeight` | The overlay is drawn from outside the class hierarchy, so an accessor is required. |
+| `CameraMixin` | `Camera#setup(BlockGetter,Entity,boolean,boolean,float)` | TAIL: applies the perspective lock rotation. |
+| `DebugScreenOverlayMixin` | `DebugScreenOverlay#render(GuiGraphics)` | HEAD cancels vanilla when the compact panel replaces it, TAIL draws the compact panel. |
+| `EntityMixin` | `Entity#remove(Entity.RemovalReason)` | HEAD: drops per-entity caches (no leaks). |
+| `GameRendererMixin` | `GameRenderer#getFov(Camera,float,boolean)` | RETURN: multiplies the computed FOV by the zoom factor. |
+| `GuiMixin` | `Gui#renderCrosshair(GuiGraphics,DeltaTracker)` | HEAD: cancels the vanilla crosshair when the designer draws its own. The handler only declares the `GuiGraphics` argument (Mixin allows trimming trailing parameters), so `DeltaTracker` is never named. |
+| `MouseHandlerMixin` | `MouseHandler#onScroll(long,double,double)` | HEAD: feeds the zoom wheel; nothing is cancelled. |
+| `ParticleEngineMixin` | `ParticleEngine#createParticle(ParticleOptions,ClientLevel,double×6,RandomSource)` | HEAD: cancels hidden particle types client side. |
+
+All injectors use `require = 0` and every handler is wrapped in a defensive try/catch, and
+`core/ApiCompat` prints an `[ ok ] / [ MISS ]` line for each hook a few seconds after startup.
+If a future Minecraft release moves one of these methods, the affected feature degrades
+silently and the log says exactly which one.
+
+### Points worth re-checking after a Minecraft update
+
+These are the only places where a signature cannot be inferred from the source in this repo
+(they are the least stable names in the Mojang mappings):
+
+1. `EditBox(Font, int, int, int, int, Component)` and its setters (`setBordered`, `setMaxLength`,
+   `setResponder`, `setTextColor`) — used by the container search field and the text dialogs.
+2. `Gui#getChat()` — used to restore the chat history after a reconnect.
+3. `BundleContents#items()` — used by the bundle preview.
+4. `ItemEnchantments#keySet()` / `getLevel(Holder)` — used for the enchantment short names.
+5. `Options#getSoundSourceOptionInstance(SoundSource)` — used by the volume ducker.
+6. `Camera#setRotation(float, float)` — used by the perspective lock.
+
+Each is isolated in a single small method with a try/catch around it.
+
+## Fair play statement
+
+Every feature follows the same three rules:
+
+1. **Read only.** Overlays read the state vanilla already received (entity data, chat, sound
+   events, inventory contents). No feature asks the server for anything.
+2. **One action, from the player.** The radial menu executes exactly one entry when the player
+   releases the key. Nothing is scheduled, repeated, automated or triggered while the player is
+   away from the keyboard.
+3. **Client side only.** Hiding particles, dimming slots, colouring text, changing the FOV,
+   rotating the local camera, ducking the volume or writing a screenshot copy all happen after
+   the network layer and are never sent back. There is no auto-eat, no auto-click, no
+   fastplace, no movement or hitbox modification - everything in this mod is presentation.

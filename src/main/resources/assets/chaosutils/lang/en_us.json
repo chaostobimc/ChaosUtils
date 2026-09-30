@@ -1,0 +1,14 @@
+{
+	"key.chaosutils.open_gui": "Open ChaosUtils",
+	"key.chaosutils.radial_menu": "Radial menu (hold)",
+	"key.chaosutils.zoom": "Smooth zoom (hold)",
+	"key.chaosutils.free_look": "Perspective lock (hold)",
+	"key.chaosutils.search_container": "Container search",
+	"key.chaosutils.copy_coordinates": "Copy coordinates",
+	"key.chaosutils.chat_history": "Chat history",
+	"key.chaosutils.screenshot_popup": "Screenshot manager",
+	"key.chaosutils.toggle_gamma": "Night vision",
+	"key.chaosutils.panic_toggle": "Hide all overlays",
+	"key.chaosutils.add_waypoint": "Add waypoint",
+	"key.categories.chaosutils": "ChaosUtils"
+}
