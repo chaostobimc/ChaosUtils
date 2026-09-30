@@ -15,421 +15,613 @@ import dev.chaosutils.util.Anim;
 import dev.chaosutils.util.Render;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 
 /**
- * The main ChaosUtils interface.
+ * The ChaosUtils interface.
  *
- * <p>Sidebar with categories on the left, searchable animated module cards on the right.
- * Every setting of every feature is rendered generically from its {@link Setting}
- * description, so nothing can be missing from the GUI.
+ * <p>A floating window (drag the top bar, resize from the corner, double-click the bar to re-centre)
+ * with a sidebar of categories on the left and a searchable list of module cards on the right.
+ * Every setting of every feature is rendered generically from its {@link Setting} description, so
+ * a newly added feature shows up in the interface without touching this class.
  */
 public final class ChaosClickGui extends ChaosScreen {
+	private static final float SIDEBAR_MIN = 138.0F;
+	private static final float CARD_GAP = 6.0F;
+
 	private final Map<String, Boolean> expanded = new HashMap<>();
+	private final List<ModuleCard> cards = new ArrayList<>();
 	private Category selected = Category.HUD;
 	private String query = "";
-	private EditBox search;
+	private float selectedPulse;
+
+	private UiWidgets.ScrollList list;
+	private UiWidgets.SearchField search;
+	private UiWidgets.Label headerTitle;
+	private UiWidgets.Label headerSubtitle;
+	private float sidebarWidth;
 
 	public ChaosClickGui() {
-		super(Component.literal("ChaosUtils"));
+		this(null);
 	}
+
+	public ChaosClickGui(Screen parent) {
+		super(parent, Component.literal("ChaosUtils"), "window.main", 680.0F, 440.0F);
+	}
+
+	// ------------------------------------------------------------------ layout
 
 	@Override
 	protected void buildLayout() {
-		UiTheme theme = theme();
-		float sidebarWidth = theme.sidebarWidth;
-		float topBar = 34.0F;
-		float contentX = 12.0F + sidebarWidth + 8.0F;
-		float contentWidth = this.width - contentX - 12.0F;
+		UiTheme theme = UiTheme.get();
+		float winX = window.x();
+		float winY = window.y();
+		float sidebarTop = winY + window.titleHeight() + 10.0F;
+		float sidebarHeight = window.height() - window.titleHeight() - 20.0F;
+		this.sidebarWidth = Math.max(SIDEBAR_MIN, theme.sidebarWidth + 44.0F);
 
-		// --- sidebar
-		float y = topBar + 8.0F;
-		List<Category> categories = List.of(Category.values());
-		for (Category category : categories) {
-			SidebarEntry entry = new SidebarEntry(this, category);
-			entry.setBounds(12.0F, y, sidebarWidth, 24.0F);
-			add(entry);
-			y += 26.0F;
+		float contentX = winX + sidebarWidth + 24.0F;
+		float contentWidth = Math.max(220.0F, window.right() - 14.0F - contentX);
+
+		SidebarPanel panel = new SidebarPanel();
+		panel.setBounds(winX + 8.0F, sidebarTop - 4.0F, sidebarWidth - 4.0F, sidebarHeight + 4.0F);
+		add(panel);
+
+		// --- sidebar: categories
+		float cursor = sidebarTop + 22.0F;
+		for (Category category : Category.values()) {
+			SidebarItem item = new SidebarItem(this, category);
+			item.setBounds(winX + 14.0F, cursor, sidebarWidth - 12.0F, 26.0F);
+			item.setAppearDelay(0.02F * category.ordinal());
+			add(item);
+			cursor += 28.0F;
 		}
 
-		// --- buttons
-		float buttonWidth = (sidebarWidth - 6.0F) * 0.5F;
-		UiWidgets.Button hudEditor = new UiWidgets.Button(this, "HUD Editor", theme.accent, this::openHudEditor);
-		hudEditor.setBounds(12.0F, this.height - 54.0F, buttonWidth, 18.0F);
-		hudEditor.setTooltip("Move every overlay with the mouse.");
-		add(hudEditor);
+		// --- sidebar: quick actions
+		float actionsBottom = winY + window.height() - 12.0F;
+		UiWidgets.Label general = new UiWidgets.Label("General", UiTheme.get().textFaint);
+		general.setBounds(winX + 22.0F, actionsBottom - 76.0F, sidebarWidth - 20.0F, 10.0F);
+		add(general);
+		float half = (sidebarWidth - 18.0F) * 0.5F;
+		add(smallButton("HUD Editor", winX + 14.0F, actionsBottom - 62.0F, half,
+				() -> openHudEditor(), "Move every overlay with the mouse."));
+		add(smallButton("Radial", winX + 14.0F + half + 6.0F, actionsBottom - 62.0F, half,
+				() -> open(new ChaosScreens.RadialEditorScreen(this)), "Create, edit and reorder the radial menu."));
+		add(smallButton("Waypoints", winX + 14.0F, actionsBottom - 40.0F, half,
+				() -> open(new ChaosScreens.WaypointsScreen(this)), "Death markers and manual waypoints."));
+		add(smallButton("Chat", winX + 14.0F + half + 6.0F, actionsBottom - 40.0F, half,
+				() -> open(new ChaosScreens.ChatHistoryScreen(this)), "Search and copy everything you saw in chat."));
+		add(smallButton("Screenshots", winX + 14.0F, actionsBottom - 18.0F, half,
+				() -> open(new ChaosScreens.ScreenshotScreen(this)), "Browse, copy and crop local screenshots."));
 
-		UiWidgets.Button radialEditor = new UiWidgets.Button(this, "Radial", theme.accent, () -> {
-			if (this.minecraft != null) {
-				this.minecraft.setScreen(new ChaosScreens.RadialEditorScreen(this));
-			}
-		});
-		radialEditor.setBounds(12.0F + buttonWidth + 6.0F, this.height - 54.0F, buttonWidth, 18.0F);
-		radialEditor.setTooltip("Create, edit and delete radial menu entries.");
-		add(radialEditor);
-
-		UiWidgets.Button waypoints = new UiWidgets.Button(this, "Waypoints", theme.accent, () -> {
-			if (this.minecraft != null) {
-				this.minecraft.setScreen(new ChaosScreens.WaypointsScreen(this));
-			}
-		});
-		waypoints.setBounds(12.0F, this.height - 76.0F, buttonWidth, 18.0F);
-		waypoints.setTooltip("Death markers and manual waypoints.");
-		add(waypoints);
-
-		UiWidgets.Button chatHistory = new UiWidgets.Button(this, "Chat", theme.accent, () -> {
-			if (this.minecraft != null) {
-				this.minecraft.setScreen(new ChaosScreens.ChatHistoryScreen(this));
-			}
-		});
-		chatHistory.setBounds(12.0F + buttonWidth + 6.0F, this.height - 76.0F, buttonWidth, 18.0F);
-		chatHistory.setTooltip("Search and copy everything you saw in chat.");
-		add(chatHistory);
-
-		UiWidgets.Button panic = new UiWidgets.Button(this, "Hide overlays", 0xFFE05B5B, () -> ChaosUtils.toggleOverlays());
-		panic.setBounds(12.0F, this.height - 32.0F, sidebarWidth, 18.0F);
-		panic.setTooltip("Panic key: hides every ChaosUtils overlay instantly.");
+		UiWidgets.Button panic = new UiWidgets.Button(
+				ChaosUtils.overlaysHidden() ? "Show overlays" : "Hide overlays",
+				UiWidgets.Button.Variant.DANGER, theme.negative, () -> {
+					ChaosUtils.toggleOverlays();
+					toast(ChaosUtils.overlaysHidden() ? "Overlays hidden" : "Overlays visible");
+					refresh();
+				});
+		panic.setBounds(winX + 14.0F + half + 6.0F, actionsBottom - 18.0F, half, 18.0F);
+		panic.setTooltip("Panic switch: hides every ChaosUtils overlay instantly.");
 		add(panic);
 
-		// --- search field
-		search = new EditBox(this.font, Math.round(contentX), Math.round(8.0F), Math.round(Math.min(220.0F, contentWidth)), 18, Component.literal("Search"));
-		search.setBordered(false);
-		search.setTextColor(0xFFF2F2F7);
-		search.setHint(Component.literal("Search features…"));
-		search.setResponder(value -> {
-			this.query = value;
-			refreshCards();
-		});
-		addInput(search);
+		// --- content header
+		headerTitle = new UiWidgets.Label(titleText(), theme.text).bold();
+		headerTitle.setBounds(contentX, winY + window.titleHeight() + 12.0F, contentWidth * 0.5F, 14.0F);
+		add(headerTitle);
 
-		// --- module cards
-		ScrollPanel panel = new ScrollPanel();
-		panel.setBounds(contentX, topBar + 4.0F, contentWidth, this.height - topBar - 16.0F);
-		add(panel);
-		rebuildCards(panel);
-	}
+		headerSubtitle = new UiWidgets.Label(subtitleText(), theme.textFaint);
+		headerSubtitle.setBounds(contentX, winY + window.titleHeight() + 27.0F, contentWidth * 0.5F, 12.0F);
+		add(headerSubtitle);
 
-	private ScrollPanel panel() {
-		for (UiComponent component : components) {
-			if (component instanceof ScrollPanel scrollPanel) {
-				return scrollPanel;
+		// --- search (vanilla text field, styled field around it)
+		EditBox searchBox = new EditBox(this.font, 0, 0, 180, 14, Component.literal("Search"));
+		searchBox.setBordered(false);
+		searchBox.setTextColor(0xFFF4F5FA);
+		searchBox.setHint(Component.literal("Search modules…"));
+		searchBox.setMaxLength(48);
+		searchBox.setValue(query);
+		searchBox.setResponder(value -> {
+			if (!value.equals(query)) {
+				query = value;
+				rebuildCards();
 			}
-		}
-		return null;
+		});
+		addInput(searchBox);
+		search = new UiWidgets.SearchField(searchBox);
+		search.setOnClear(() -> {
+			query = "";
+			rebuildCards();
+		});
+		search.place(contentX + contentWidth - 200.0F, winY + window.titleHeight() + 14.0F, 200.0F, 22.0F);
+		add(search);
+
+		UiWidgets.IconButton collapse = new UiWidgets.IconButton(
+				(graphics, cx, cy, alpha) -> {
+					// Double chevron pointing up: "collapse everything".
+					for (int i = 0; i < 2; i++) {
+						float offset = (i - 0.5F) * 4.0F;
+						Ui.chevron(graphics, cx, cy + offset, 6.0F, -90.0F, Render.alpha(theme.textDim, alpha));
+					}
+				}, theme.accent, this::collapseAll);
+		collapse.setTooltip("Collapse every expanded module.");
+		collapse.setBounds(contentX + contentWidth - 26.0F, winY + window.titleHeight() + 14.0F, 22.0F, 22.0F);
+		collapse.setAppearDelay(0.05F);
+		add(collapse);
+
+		// --- module list
+		list = new UiWidgets.ScrollList();
+		list.setSpacing(CARD_GAP);
+		list.setBounds(contentX, winY + window.titleHeight() + 44.0F, contentWidth,
+				Math.max(80.0F, window.height() - window.titleHeight() - 56.0F));
+		list.snapAppear();
+		add(list);
+		rebuildCards();
 	}
 
-	private void refreshCards() {
-		ScrollPanel panel = panel();
-		if (panel != null) {
-			rebuildCards(panel);
+	private UiWidgets.Button smallButton(String label, float x, float y, float width, Runnable action, String tooltip) {
+		UiWidgets.Button button = new UiWidgets.Button(label, UiWidgets.Button.Variant.GHOST, UiTheme.get().accent, action);
+		button.setBounds(x, y, width, 18.0F);
+		button.setTooltip(tooltip);
+		button.setPadding(2.0F);
+		return button;
+	}
+
+	private void open(Screen screen) {
+		if (this.minecraft != null) {
+			this.minecraft.setScreen(screen);
 		}
 	}
 
-	private void rebuildCards(ScrollPanel panel) {
-		panel.reset();
-		panel.clearChildren();
+	private String titleText() {
+		if (!query.isBlank()) {
+			return "Search";
+		}
+		return selected.displayName();
+	}
+
+	private String subtitleText() {
+		if (!query.isBlank()) {
+			int matches = ModuleManager.search(query).size();
+			return matches + (matches == 1 ? " match" : " matches") + " for \"" + query + "\"";
+		}
+		int total = ModuleManager.byCategory(selected).size();
+		long enabled = ModuleManager.byCategory(selected).stream().filter(Module::isEnabled).count();
+		return total + (total == 1 ? " module" : " modules") + "   ·   " + enabled + " enabled";
+	}
+
+	private void collapseAll() {
+		expanded.replaceAll((key, value) -> Boolean.FALSE);
+		rebuildCards();
+		toast("All modules collapsed");
+	}
+
+	@Override
+	protected void renderHeader(GuiGraphics graphics, float alpha) {
 		UiTheme theme = theme();
-		float cardHeight = theme.compact ? 24.0F : 28.0F;
-		float gap = 6.0F;
-		float y = 0.0F;
-		List<Module> modules = new ArrayList<>();
-		if (query != null && !query.isBlank()) {
-			modules.addAll(ModuleManager.search(query));
-		} else {
-			modules.addAll(ModuleManager.byCategory(selected));
+		Render.gradientText(graphics, this.font, "ChaosUtils", window.x() + 16.0F, window.y() + 13.0F,
+				theme.text, theme.accent, false);
+		String version = modVersion();
+		Render.text(graphics, this.font, version, window.x() + 20.0F + this.font.width("ChaosUtils"),
+				window.y() + 14.0F, Render.alpha(theme.textFaint, alpha * 0.9F), false);
+		// Window controls: re-centre and close.
+		String hint = "drag to move  ·  double-click to re-centre";
+		Render.text(graphics, this.font, hint, window.right() - 46.0F - this.font.width(hint), window.y() + 14.0F,
+				Render.alpha(theme.textFaint, alpha * 0.7F), false);
+	}
+
+	private static String modVersion() {
+		try {
+			return net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer(ChaosUtils.MOD_ID)
+					.map(container -> "beta " + container.getMetadata().getVersion().getFriendlyString())
+					.orElse("beta");
+		} catch (Throwable ignored) {
+			return "beta";
 		}
+	}
+
+	/** Status line under the module list. */
+	@Override
+	protected void renderFooter(GuiGraphics graphics, float alpha) {
+		if (list == null) {
+			return;
+		}
+		UiTheme theme = theme();
+		float y = window.bottom() - 14.0F;
+		String status = cards.size() + (cards.size() == 1 ? " module" : " modules") + " shown   ·   "
+				+ ModuleManager.countEnabled() + "/" + ModuleManager.modules().size() + " active"
+				+ (ChaosUtils.overlaysHidden() ? "   ·   overlays hidden" : "");
+		Render.text(graphics, this.font, status, window.x() + sidebarWidth + 24.0F, y,
+				Render.alpha(theme.textFaint, alpha * 0.85F), false);
+	}
+
+	// ------------------------------------------------------------------- cards
+
+	private void rebuildCards() {
+		if (list == null) {
+			return;
+		}
+		list.clearItems();
+		cards.clear();
+		List<Module> modules = query.isBlank() ? ModuleManager.byCategory(selected) : ModuleManager.search(query);
+		float width = list.width();
+		int index = 0;
 		for (Module module : modules) {
-			ModuleCard card = new ModuleCard(this, module);
-			card.setBounds(0.0F, y, panel.width(), cardHeight);
-			panel.addCard(card, y);
-			y += cardHeight + gap + card.extraHeight();
+			ModuleCard card = new ModuleCard(this, module, query.isBlank() ? null : module.category().displayName());
+			card.setBounds(0.0F, 0.0F, width, card.headerHeight());
+			card.setAppearDelay(Math.min(0.22F, 0.014F * index));
+			cards.add(card);
+			list.addItem(card);
+			index++;
 		}
-		panel.setContentHeight(y);
-	}
-
-	@Override
-	protected void renderBackdrop(GuiGraphics graphics, int mouseX, int mouseY, float deltaTicks) {
-		super.renderBackdrop(graphics, mouseX, mouseY, deltaTicks);
-		UiTheme theme = theme();
-		float sidebarWidth = theme.sidebarWidth;
-		// Sidebar / content separation with a soft accent glow.
-		Render.shadowedPanel(graphics, 12.0F, 34.0F, sidebarWidth, this.height - 34.0F - 62.0F, theme.radius, theme.panel, 0x00000000);
-		Render.verticalGradient(graphics, 12.0F, 34.0F, sidebarWidth, this.height - 34.0F - 62.0F,
-				Render.alpha(theme.accent, 0.10F), 0x00000000);
-
-		float contentX = 12.0F + sidebarWidth + 8.0F;
-		Render.shadowedPanel(graphics, contentX - 4.0F, 30.0F, this.width - contentX - 4.0F, this.height - 46.0F, theme.radius, theme.panelAlt, 0x00000000);
-
-		// Header
-		Render.text(graphics, font(), "ChaosUtils", 14.0F, 12.0F, theme.text, false);
-		String subtitle = selected.displayName() + "  ·  " + ModuleManager.countEnabled() + "/" + ModuleManager.modules().size() + " active"
-				+ (ChaosUtils.overlaysHidden() ? "  ·  OVERLAYS HIDDEN" : "");
-		Render.text(graphics, font(), subtitle, 14.0F, 22.0F, theme.textFaint, false);
-	}
-
-	@Override
-	public void render(GuiGraphics graphics, int mouseX, int mouseY, float deltaTicks) {
-		super.render(graphics, mouseX, mouseY, deltaTicks);
-		if (search != null && search.getValue().isEmpty() && !search.isFocused()) {
-			Render.text(graphics, font(), "Search features…", search.getX() + 2.0F, search.getY() + 5.0F, theme().textFaint, false);
+		list.layout();
+		if (headerTitle != null) {
+			headerTitle.setText(titleText());
+		}
+		if (headerSubtitle != null) {
+			headerSubtitle.setText(subtitleText());
 		}
 	}
 
-	// ------------------------------------------------------------------ widgets
+	@Override
+	protected void modalClosed(UiModals.Modal modal) {
+		refresh();
+	}
 
-	private static final class SidebarEntry extends UiComponent {
+	@Override
+	public void requestClose() {
+		if (search != null && search.box().isFocused()) {
+			setFocused(null);
+		}
+		super.requestClose();
+	}
+
+	// --------------------------------------------------------------- sidebar
+
+	/** Inset surface behind the sidebar entries. */
+	private static final class SidebarPanel extends UiComponent {
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			Render.roundedRect(graphics, x, y, width, height, theme.radiusCard, Render.alpha(0x000000, 0.22F * alpha));
+			Render.ring(graphics, x, y, width, height, theme.radiusCard, 1.0F, Render.alpha(theme.outlineSoft, alpha));
+			Ui.sectionLabel(graphics, UiWidgets.font(), "Modules", x + 12.0F, y + 12.0F, theme.textFaint, alpha);
+		}
+	}
+
+	/** One category entry: accent pill, item icon, label and module count. */
+	private static final class SidebarItem extends UiComponent {
 		private final ChaosClickGui gui;
 		private final Category category;
+		private final Anim.Value selectedAnim = new Anim.Value(0.0F, 16.0F);
 
-		private SidebarEntry(ChaosClickGui gui, Category category) {
+		private SidebarItem(ChaosClickGui gui, Category category) {
 			this.gui = gui;
 			this.category = category;
-			this.setTooltip(category.displayName());
+			this.setTooltip(category.displayName() + " — " + ModuleManager.byCategory(category).size() + " modules");
 		}
 
 		@Override
 		public void update(float deltaSeconds, float mouseX, float mouseY) {
 			super.update(deltaSeconds, mouseX, mouseY);
-			active.set(gui.selected == category ? 1.0F : 0.0F);
-			active.update(deltaSeconds);
+			selectedAnim.set(gui.selected == category && gui.query.isBlank() ? 1.0F : 0.0F);
+			selectedAnim.update(UiTheme.get().speed(16.0F));
 		}
 
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			float selectedAmount = active.get();
-			int background = Render.mix(0x00000000, Render.alpha(theme.accent, 0.30F), selectedAmount);
-			background = Render.mix(background, Render.alpha(0xFFFFFFFF, 0.06F), hover.get() * (1.0F - selectedAmount));
-			Render.roundedRect(graphics, x, y, width, height, theme.radius * 0.7F, background);
-			if (selectedAmount > 0.01F) {
-				Render.roundedRect(graphics, x, y + 4.0F, 2.5F * selectedAmount, height - 8.0F, 1.5F, category.color());
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
 			}
-			int textColor = Render.mix(theme.textDim, theme.text, Math.max(selectedAmount, hover.get()));
-			Render.text(graphics, gui.font(), category.displayName(), x + 24.0F, y + (height - 8.0F) * 0.5F - 0.5F, textColor, false);
-			Render.item(graphics, category.icon(), x + 6.0F, y + (height - 16.0F) * 0.5F);
+			UiTheme theme = UiTheme.get();
+			float selectedAmount = selectedAnim.get();
+			float hoverAmount = hover.get();
+			float radius = 9.0F;
+			int background = Render.mix(Render.alpha(0xFFFFFFFF, 0.0F),
+					Render.alpha(category.color(), 0.16F * alpha), selectedAmount);
+			background = Render.mix(background, Render.alpha(0xFFFFFFFF, 0.06F * alpha), hoverAmount * (1.0F - selectedAmount));
+			if (selectedAmount > 0.03F && theme.glow) {
+				Render.glow(graphics, x + width * 0.5F, centerY(), width * 0.55F, category.color(),
+						0.18F * selectedAmount * alpha);
+			}
+			Render.roundedRect(graphics, x, y, width, height, radius, background);
+			if (selectedAmount > 0.05F) {
+				Render.roundedRect(graphics, x, y + 5.0F, 2.5F, height - 10.0F, 1.25F,
+						Render.alpha(category.color(), alpha * selectedAmount));
+			}
+			Ui.iconTile(graphics, x + 6.0F, centerY() - 10.0F, 20.0F, 6.0F, category.color(),
+					alpha * (0.55F + 0.45F * Math.max(selectedAmount, hoverAmount * 0.8F)));
+			Ui.itemIcon(graphics, category.icon(), x + 16.0F, centerY(), 0.8F, alpha);
+			int textColor = Render.mix(theme.textDim, theme.text, Math.max(selectedAmount, hoverAmount * 0.7F));
+			Render.text(graphics, UiWidgets.font(), Render.ellipsize(UiWidgets.font(), category.displayName(),
+					width - 60.0F), x + 32.0F, centerY() - 4.0F, Render.alpha(textColor, alpha), false);
+			String count = String.valueOf(ModuleManager.byCategory(category).size());
+			Render.text(graphics, UiWidgets.font(), count, right() - 8.0F - UiWidgets.font().width(count), centerY() - 4.0F,
+					Render.alpha(Render.mix(theme.textFaint, category.color(), Math.max(selectedAmount, 0.25F)), alpha), false);
 		}
 
 		@Override
 		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (isHovered(mouseX, mouseY)) {
-				gui.selected = category;
-				gui.query = "";
-				if (gui.search != null) {
-					gui.search.setValue("");
-				}
-				gui.refreshCards();
-				gui.playClick(true);
-				return true;
+			if (!isHovered(mouseX, mouseY) || button != 0) {
+				return false;
 			}
-			return false;
+			gui.selected = category;
+			gui.query = "";
+			if (gui.search != null) {
+				gui.search.box().setValue("");
+			}
+			gui.playClick(true);
+			gui.refresh();
+			return true;
 		}
 	}
 
-	/** Scrollable, clipped container that keeps its children's hover state correct. */
-	private static final class ScrollPanel extends UiComponent {
-		private final Map<UiComponent, Float> baseY = new HashMap<>();
-		private float scroll;
-		private float content;
-		private float targetScroll;
+	// ------------------------------------------------------------------ cards
 
-		private void addCard(UiComponent card, float baseOffset) {
-			baseY.put(card, baseOffset);
-			card.setBounds(card.x(), y + baseOffset, card.width(), card.height());
-			addChild(card);
-		}
-
-		private void setContentHeight(float contentHeight) {
-			this.content = contentHeight;
-		}
-
-		@Override
-		public void update(float deltaSeconds, float mouseX, float mouseY) {
-			float maxScroll = Math.max(0.0F, content - height);
-			targetScroll = Anim.clamp(targetScroll, 0.0F, maxScroll);
-			scroll = Anim.approach(scroll, targetScroll, UiTheme.get().speed(14.0F), deltaSeconds);
-			for (UiComponent child : children()) {
-				Float base = baseY.get(child);
-				if (base != null) {
-					child.setBounds(child.x(), y + base - scroll, child.width(), child.height());
-				}
-			}
-			super.update(deltaSeconds, mouseX, mouseY);
-		}
-
-		@Override
-		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			Render.scissor(graphics, x, y, width, height);
-			renderChildren(graphics, mouseX, mouseY, deltaSeconds);
-			Render.unscissor(graphics);
-			float maxScroll = Math.max(1.0F, content - height);
-			if (content > height) {
-				float barHeight = Math.max(24.0F, height * (height / content));
-				float barY = y + (height - barHeight) * (scroll / maxScroll);
-				Render.roundedRect(graphics, x + width - 3.0F, barY, 3.0F, barHeight, 1.5F, Render.alpha(theme.accent, 0.65F));
-			}
-		}
-
-		@Override
-		public boolean mouseScrolled(float mouseX, float mouseY, double amount) {
-			if (isHovered(mouseX, mouseY)) {
-				targetScroll -= (float) amount * 24.0F;
-				return true;
-			}
-			return super.mouseScrolled(mouseX, mouseY, amount);
-		}
-
-		@Override
-		public void reset() {
-			super.reset();
-			baseY.clear();
-			scroll = 0.0F;
-			targetScroll = 0.0F;
-			content = 0.0F;
-		}
-	}
-
-	/** One feature: header with quick toggle plus every setting, animated expansion. */
+	/** One feature: header with switch and expanding settings. */
 	private static final class ModuleCard extends UiComponent {
+		private static final float HEADER_ROOMY = 46.0F;
+		private static final float HEADER_COMPACT = 40.0F;
+
 		private final ChaosClickGui gui;
 		private final Module module;
-		private final Anim.Value expand = new Anim.Value(0.0F, 12.0F);
+		private final String badge;
 		private final List<UiComponent> rows = new ArrayList<>();
+		private final Anim.Value expand = new Anim.Value(0.0F, 14.0F);
+		private final Anim.Value switchHover = new Anim.Value(0.0F, 16.0F);
+		private boolean rowsBuilt;
+		private boolean expandedBefore;
 
-		private ModuleCard(ChaosClickGui gui, Module module) {
+		private ModuleCard(ChaosClickGui gui, Module module, String badge) {
 			this.gui = gui;
 			this.module = module;
-			this.setTooltip(module.description());
-			buildRows();
-			expand.snap(expanded() ? 1.0F : 0.0F);
+			this.badge = badge;
+			this.setTooltip(module.description() + "\n§7" + module.category().displayName()
+					+ (keybindHint() == null ? "" : "  ·  key: " + keybindHint()));
+		}
+
+		private float headerHeight() {
+			return UiTheme.get().compact ? HEADER_COMPACT : HEADER_ROOMY;
 		}
 
 		private boolean expanded() {
 			return gui.expanded.getOrDefault(module.id(), Boolean.FALSE);
 		}
 
-		private void buildRows() {
-			UiTheme theme = UiTheme.get();
-			float rowHeight = theme.compact ? 18.0F : 20.0F;
+		private float rowsHeight() {
+			if (!expandedBefore || rows.isEmpty()) {
+				return 0.0F;
+			}
+			float total = 0.0F;
+			for (UiComponent row : rows) {
+				total += row.height() + 2.0F;
+			}
+			return total + 10.0F;
+		}
+
+		private void buildRows(float rowWidth) {
+			rows.clear();
+			clearChildren();
 			float y = 0.0F;
 			for (Setting<?> setting : module.settings()) {
 				if (setting == module.enabled()) {
 					continue;
 				}
 				UiComponent row = UiWidgets.forSetting(setting, gui);
-				row.setBounds(0.0F, y, width - 16.0F, rowHeight);
-				row.setTooltip(setting.description + (setting.description.isEmpty() ? "" : "\n") + "default: " + defaultHint(setting));
+				if (row == null) {
+					continue;
+				}
+				row.setBounds(0.0F, y, rowWidth, UiWidgets.rowHeight(setting));
+				row.setTooltip(setting.description
+						+ (setting.description == null || setting.description.isEmpty() ? "" : "\n")
+						+ "§7right-click to reset  ·  default " + setting.display());
 				rows.add(row);
-				y += rowHeight + 2.0F;
+				addChild(row);
+				y += row.height() + 2.0F;
 			}
+			rowsBuilt = true;
 		}
 
-		private String defaultHint(Setting<?> setting) {
-			return setting.isDefault() ? "current" : "changed";
-		}
-
-		private float extraHeight() {
-			return rows.isEmpty() ? 0.0F : (rows.get(0).height() + 2.0F) * rows.size() * expand.get();
+		private String keybindHint() {
+			if (!UiTheme.get().keybindHints) {
+				return null;
+			}
+			try {
+				return switch (module.id()) {
+					case "radial_menu" -> dev.chaosutils.core.Keybinds.radialMenu.getTranslatedKeyMessage().getString();
+					case "gui" -> dev.chaosutils.core.Keybinds.openGui.getTranslatedKeyMessage().getString();
+					case "zoom" -> dev.chaosutils.core.Keybinds.zoom.getTranslatedKeyMessage().getString();
+					case "perspective_lock" -> dev.chaosutils.core.Keybinds.freeLook.getTranslatedKeyMessage().getString();
+					case "container_search" -> dev.chaosutils.core.Keybinds.searchContainer.getTranslatedKeyMessage().getString();
+					case "chat_history" -> dev.chaosutils.core.Keybinds.chatHistory.getTranslatedKeyMessage().getString();
+					case "screenshots" -> dev.chaosutils.core.Keybinds.screenshotPopup.getTranslatedKeyMessage().getString();
+					case "gamma" -> dev.chaosutils.core.Keybinds.toggleGamma.getTranslatedKeyMessage().getString();
+					case "waypoint" -> dev.chaosutils.core.Keybinds.addWaypoint.getTranslatedKeyMessage().getString();
+					default -> null;
+				};
+			} catch (Throwable ignored) {
+				return null;
+			}
 		}
 
 		@Override
 		public void update(float deltaSeconds, float mouseX, float mouseY) {
-			expand.set(expanded() ? 1.0F : 0.0F);
-			expand.update(deltaSeconds);
-			float headerHeight = height;
-			float rowHeight = rows.isEmpty() ? 0.0F : rows.get(0).height() + 2.0F;
-			for (int i = 0; i < rows.size(); i++) {
-				UiComponent row = rows.get(i);
-				row.setBounds(x + 8.0F, y + headerHeight + 2.0F + i * rowHeight, width - 16.0F, row.height());
+			boolean expanded = expanded();
+			if (expanded && !rowsBuilt) {
+				buildRows(width - 24.0F);
 			}
-			// Only update rows that are inside the visible portion of the card.
-			float visibleHeight = expand.get() * rowHeight * rows.size();
-			for (int i = 0; i < rows.size(); i++) {
-				boolean visibleRow = (i + 1) * rowHeight <= visibleHeight + rowHeight;
-				rows.get(i).setVisible(visibleRow);
-				if (visibleRow) {
-					rows.get(i).update(deltaSeconds, mouseX, mouseY);
-				}
+			if (expanded) {
+				expandedBefore = true;
 			}
+			expand.set(expanded ? 1.0F : 0.0F);
+			expand.update(UiTheme.get().speed(14.0F));
+			float extra = expandedBefore ? rowsHeight() * Anim.easeOutQuint(expand.get()) : 0.0F;
+			height = headerHeight() + extra;
 			super.update(deltaSeconds, mouseX, mouseY);
+			switchHover.set(isOverSwitch(mouseX, mouseY) ? 1.0F : 0.0F);
+			switchHover.update(UiTheme.get().speed(16.0F));
+			float rowY = headerHeight() + 6.0F;
+			for (UiComponent row : rows) {
+				row.setBounds(x + 12.0F, y + rowY, width - 24.0F, row.height());
+				row.setLayerAlpha(layerAlpha * Anim.clamp01(expand.get()));
+				row.setVisible(expand.get() > 0.6F);
+				if (row.isVisible()) {
+					row.update(deltaSeconds, mouseX, mouseY);
+				}
+				rowY += row.height() + 2.0F;
+			}
+		}
+
+		private boolean isOverSwitch(float mouseX, float mouseY) {
+			float switchX = right() - 44.0F;
+			return mouseX >= switchX && mouseX <= switchX + 32.0F && mouseY >= y && mouseY <= y + headerHeight();
 		}
 
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
 			UiTheme theme = UiTheme.get();
+			float offset = appearOffset();
 			int accent = module.category().color();
 			boolean on = module.isEnabled();
-			float visibleHeight = expand.get() * (rows.isEmpty() ? 0.0F : (rows.get(0).height() + 2.0F) * rows.size());
-			float totalHeight = height + visibleHeight;
+			float radius = theme.radiusCard;
+			float hoverAmount = hover.get();
+			float expandAmount = expand.get();
 
-			int background = Render.mix(theme.panel, theme.panelHover, hover.get() * 0.7F);
-			Render.roundedRect(graphics, x, y, width, totalHeight, theme.radius, background);
-			Render.roundedBorder(graphics, x, y, width, totalHeight, theme.radius, 1.0F,
-					Render.alpha(on ? accent : 0xFFFFFFFF, on ? 0.45F : 0.08F), background);
-			if (on) {
-				Render.roundedRect(graphics, x, y + 5.0F, 2.5F, height - 10.0F, 1.25F, accent);
+			graphics.pose().pushMatrix();
+			graphics.pose().translate(0.0F, offset);
+
+			Ui.card(graphics, x, y, width, height, radius, theme, hoverAmount, on, alpha);
+
+			// Icon tile
+			Ui.iconTile(graphics, x + 12.0F, y + (headerHeight() - 26.0F) * 0.5F, 26.0F, 8.0F, accent, alpha);
+			Ui.itemIcon(graphics, module.category().icon(), x + 25.0F, y + headerHeight() * 0.5F, 0.95F, alpha);
+
+			float textX = x + 48.0F;
+			float textRight = x + width - 92.0F;
+			if (badge != null) {
+				int badgeWidth = UiWidgets.font().width(badge) + 12;
+				Render.roundedRect(graphics, textX, y + 9.0F, badgeWidth, 12.0F, 6.0F,
+						Render.alpha(accent, 0.18F * alpha));
+				Render.text(graphics, UiWidgets.font(), badge, textX + 6.0F, y + 11.0F, Render.alpha(accent, alpha), false);
+				textX += badgeWidth + 6.0F;
 			}
-			Render.item(graphics, module.category().icon(), x + 8.0F, y + (height - 16.0F) * 0.5F);
-			Render.text(graphics, gui.font(), module.name(), x + 28.0F, y + 6.0F, on ? theme.text : theme.textDim, false);
-			String subtitle = module.description();
-			while (gui.font().width(subtitle) > width - 120.0F && subtitle.length() > 6) {
-				subtitle = subtitle.substring(0, subtitle.length() - 2) + "…";
+			Render.boldText(graphics, UiWidgets.font(),
+					Render.ellipsize(UiWidgets.font(), module.name(), textRight - textX),
+					textX, y + 10.0F, Render.alpha(on ? theme.text : theme.textDim, alpha), false);
+
+			String keybind = keybindHint();
+			float descriptionRight = textRight;
+			if (keybind != null && !keybind.isEmpty()) {
+				int chipWidth = UiWidgets.font().width(keybind) + 12;
+				float chipX = textX + Math.min(UiWidgets.font().width(module.name()) + 8.0F, textRight - textX - chipWidth);
+				Render.roundedRect(graphics, chipX, y + 8.0F, chipWidth, 13.0F, 6.5F,
+						Render.alpha(0xFFFFFFFF, 0.07F * alpha));
+				Render.text(graphics, UiWidgets.font(), keybind, chipX + 6.0F, y + 10.5F,
+						Render.alpha(theme.textFaint, alpha), false);
 			}
-			Render.text(graphics, gui.font(), subtitle, x + 28.0F, y + height - 11.0F, theme.textFaint, false);
+			Render.text(graphics, UiWidgets.font(),
+					Render.ellipsize(UiWidgets.font(), module.description(), descriptionRight - textX),
+					textX, y + headerHeight() - 18.0F,
+					Render.alpha(Render.mix(theme.textFaint, theme.textDim, hoverAmount), alpha), false);
 
-			// quick toggle
-			float switchWidth = 26.0F;
-			float sx = x + width - switchWidth - 10.0F;
-			float sy = y + (height - 13.0F) * 0.5F;
-			int track = Render.mix(0xFF3A3A48, accent, on ? 1.0F : 0.0F);
-			Render.roundedRect(graphics, sx, sy, switchWidth, 13.0F, 6.5F, track);
-			float knob = 9.0F;
-			Render.roundedRect(graphics, sx + 2.0F + (on ? switchWidth - knob - 4.0F : 0.0F), sy + 2.0F, knob, knob, 4.5F, 0xFFFFFFFF);
+			// Switch (drawn here, not as a child, so the whole card stays one component).
+			float switchWidth = 30.0F;
+			float switchHeight = 16.0F;
+			float switchX = right() - switchWidth - 44.0F;
+			float switchY = y + (headerHeight() - switchHeight) * 0.5F;
+			float onAmount = on ? 1.0F : 0.0F;
+			int track = Render.mix(Render.alpha(theme.track, alpha),
+					Render.alpha(Render.mix(accent, 0xFFFFFFFF, switchHover.get() * 0.12F), alpha), onAmount);
+			if (onAmount > 0.05F && theme.glow) {
+				Render.glow(graphics, switchX + switchWidth * 0.5F, switchY + switchHeight * 0.5F, switchWidth * 1.15F,
+						accent, 0.30F * onAmount * alpha);
+			}
+			Render.roundedRect(graphics, switchX, switchY, switchWidth, switchHeight, switchHeight * 0.5F, track);
+			Render.ring(graphics, switchX, switchY, switchWidth, switchHeight, switchHeight * 0.5F, 1.0F,
+					Render.alpha(theme.outline, alpha));
+			float knobRadius = switchHeight * 0.5F - 1.6F;
+			float knobX = switchX + switchHeight * 0.5F + (switchWidth - switchHeight) * onAmount;
+			Ui.knob(graphics, knobX, switchY + switchHeight * 0.5F, knobRadius,
+					Render.mix(0xFFD7D8E4, 0xFFFFFFFF, onAmount), alpha);
 
-			Render.text(graphics, gui.font(), expanded() ? "▾" : "▸", x + width - switchWidth - 26.0F, y + (height - 8.0F) * 0.5F - 0.5F,
-					theme.textFaint, false);
+			// Expander chevron
+			float chevronX = right() - 22.0F;
+			float chevronY = y + headerHeight() * 0.5F;
+			Ui.chevron(graphics, chevronX, chevronY, 7.0F, 90.0F * expandAmount,
+					Render.alpha(Render.mix(theme.textFaint, theme.text, hoverAmount), alpha));
 
-			if (visibleHeight > 1.0F) {
-				Render.scissor(graphics, x, y + height, width, visibleHeight);
+			// Settings
+			if (expandAmount > 0.02F && expandedBefore) {
+				float clipTop = y + headerHeight();
+				float clipHeight = Math.max(0.0F, height - headerHeight());
+				Render.scissor(graphics, x, clipTop, width, clipHeight);
+				Ui.divider(graphics, x + 12.0F, y + headerHeight() + 2.0F, width - 24.0F, theme, alpha * 0.8F);
 				for (UiComponent row : rows) {
-					if (row.isVisible()) {
-						row.render(graphics, mouseX, mouseY, deltaSeconds);
+					if (!row.isVisible()) {
+						continue;
 					}
+					boolean rowHovered = row.contains(mouseX, mouseY);
+					if (rowHovered) {
+						Render.roundedRect(graphics, row.x() - 4.0F, row.y() - 2.0F, row.width() + 8.0F, row.height() + 2.0F,
+								6.0F, Render.alpha(0xFFFFFFFF, 0.045F * alpha));
+					}
+					row.render(graphics, mouseX, mouseY, deltaSeconds);
 				}
 				Render.unscissor(graphics);
 			}
+			graphics.pose().popMatrix();
 		}
 
 		@Override
 		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			float visibleHeight = expand.get() * (rows.isEmpty() ? 0.0F : (rows.get(0).height() + 2.0F) * rows.size());
-			if (visibleHeight > 1.0F && mouseY > y + height && mouseY <= y + height + visibleHeight) {
+			if (!isHovered(mouseX, mouseY)) {
+				return false;
+			}
+			boolean overSwitch = isOverSwitch(mouseX, mouseY);
+			float rowsTop = y + headerHeight();
+			if (button == 0 && expand.get() > 0.6F && mouseY > rowsTop) {
 				for (UiComponent row : rows) {
 					if (row.isVisible() && row.mouseClicked(mouseX, mouseY, button)) {
 						return true;
 					}
 				}
+				return true;
 			}
-			float switchWidth = 26.0F;
-			float sx = x + width - switchWidth - 10.0F;
-			if (mouseY >= y && mouseY <= y + height) {
-				if (mouseX >= sx - 2.0F && mouseX <= sx + switchWidth + 2.0F) {
-					if (button == 0) {
-						module.enabled().toggle();
-						gui.playClick(module.isEnabled());
-						return true;
-					}
-					if (button == 1) {
-						module.enabled().reset();
-						return true;
+			if (mouseY > y + headerHeight()) {
+				return false;
+			}
+			if (button == 0 && overSwitch) {
+				module.enabled().toggle();
+				gui.playClick(module.isEnabled());
+				return true;
+			}
+			if (button == 1) {
+				if (module.isEnabled()) {
+					module.enabled().toggle();
+				}
+				for (Setting<?> setting : module.settings()) {
+					if (setting != module.enabled()) {
+						setting.reset();
 					}
 				}
-				if (button == 0) {
-					gui.expanded.put(module.id(), !expanded());
-					gui.refreshCards();
-					gui.playClick(true);
-					return true;
-				}
+				gui.playClick(false);
+				gui.toast(module.name(), "reset to defaults", UiTheme.get().warning);
+				return true;
+			}
+			if (button == 0) {
+				gui.expanded.put(module.id(), !expanded());
+				gui.playClick(true);
+				return true;
 			}
 			return false;
 		}
@@ -456,30 +648,17 @@ public final class ChaosClickGui extends ChaosScreen {
 
 		@Override
 		public boolean mouseScrolled(float mouseX, float mouseY, double amount) {
-			return false;
-		}
-
-		@Override
-		public String tooltip() {
-			return module.description() + "\n§7" + module.category().displayName() + "  ·  " + keybindHint();
-		}
-
-		private String keybindHint() {
-			String key = switch (module.id()) {
-				case "radial_menu" -> dev.chaosutils.core.Keybinds.radialMenu == null ? "" : dev.chaosutils.core.Keybinds.radialMenu.getTranslatedKeyMessage().getString();
-				case "gui" -> dev.chaosutils.core.Keybinds.openGui == null ? "" : dev.chaosutils.core.Keybinds.openGui.getTranslatedKeyMessage().getString();
-				case "zoom" -> dev.chaosutils.core.Keybinds.zoom == null ? "" : dev.chaosutils.core.Keybinds.zoom.getTranslatedKeyMessage().getString();
-				default -> "";
-			};
-			if (key.isEmpty()) {
-				return "Rebind in Options → Controls";
+			for (UiComponent row : rows) {
+				if (row.isVisible() && row.mouseScrolled(mouseX, mouseY, amount)) {
+					return true;
+				}
 			}
-			return "default key: " + key;
+			return false;
 		}
 	}
 
-	/** Small helper so the widget package can query the currently typed search query. */
-	public String query() {
-		return query == null ? "" : query.toLowerCase(Locale.ROOT);
+	/** Search helper used by the list screens. */
+	public static List<Module> searchResults(String query) {
+		return ModuleManager.search(query == null ? "" : query.toLowerCase(Locale.ROOT));
 	}
 }

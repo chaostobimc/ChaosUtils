@@ -11,6 +11,7 @@ import dev.chaosutils.config.ModuleManager;
 import dev.chaosutils.config.RadialElement;
 import dev.chaosutils.config.Setting;
 import dev.chaosutils.core.Keybinds;
+import dev.chaosutils.util.InputUtil;
 import dev.chaosutils.feature.Feature;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
@@ -47,6 +48,9 @@ public final class RadialMenuFeature implements Feature {
 	private static Setting.Toggle dimBackground;
 	private static Setting.Number dimStrength;
 	private static Setting.Toggle chatFeedback;
+	private static Setting.Toggle autoScale;
+	/** Previous physical key state, used for edge detection that also works inside a screen. */
+	private static boolean wasHeld;
 
 	private static RadialMenuScreen open;
 
@@ -89,43 +93,60 @@ public final class RadialMenuFeature implements Feature {
 				"Opacity of the dimming layer.", 0.35, 0.0, 0.8, 0.05));
 		chatFeedback = (Setting.Toggle) module.add(new Setting.Toggle("feedback", "Chat feedback",
 				"Confirm executed actions in your action bar.", true));
-	}
-
-	public static boolean isOpen() {
-		return open != null;
+		autoScale = (Setting.Toggle) module.add(new Setting.Toggle("auto_scale", "Fit to screen",
+				"Shrink the ring so it always fits on screen, even when it opens near an edge.", true));
 	}
 
 	@Override
 	public void onTick(Minecraft client) {
-		if (client.player == null) {
+		// Switching screens has to happen in the tick: doing it while a frame is being drawn would
+		// leave the game rendering a screen that is already gone.
+		if (open != null && open.readyToClose()) {
+			RadialMenuScreen screen = open;
+			open = null;
+			screen.finishClose();
 			return;
 		}
-		boolean pressed = Keybinds.radialMenu != null && Keybinds.radialMenu.isDown();
+		if (client.player == null) {
+			wasHeld = false;
+			if (open != null) {
+				open.cancel();
+			}
+			return;
+		}
 		if (!isEnabled()) {
 			if (open != null) {
 				open.cancel();
-				open = null;
+			}
+			return;
+		}
+		// The physical key is polled instead of KeyMapping#isDown: opening a screen makes the game
+		// release every key mapping (Minecraft#setScreen -> KeyMapping.releaseAll) and the keyboard
+		// handler stops feeding key bindings while a screen is open. Relying on the mapping state
+		// would close the menu again on the very next tick - before a single frame was drawn.
+		boolean held = InputUtil.isPhysicallyDown(Keybinds.radialMenu);
+		boolean justPressed = held && !wasHeld;
+		wasHeld = held;
+
+		if (open != null) {
+			if (holdMode.get() ? !held : justPressed) {
+				// The key was released: run the slice the player pointed at, then play the exit.
+				open.commitSelection();
 			}
 			return;
 		}
 		if (holdMode.get()) {
-			if (pressed && open == null) {
+			if (held && canOpen(client)) {
 				openMenu(client);
-			} else if (!pressed && open != null) {
-				// The key was released: run whatever slice the player pointed at.
-				RadialMenuScreen screen = open;
-				open = null;
-				screen.commitSelection();
 			}
-		} else if (pressed && Keybinds.radialMenu.consumeClick()) {
-			if (open == null) {
-				openMenu(client);
-			} else {
-				RadialMenuScreen screen = open;
-				open = null;
-				screen.commitSelection();
-			}
+		} else if (justPressed && canOpen(client)) {
+			openMenu(client);
 		}
+	}
+
+	/** The menu only opens in-game, or on top of another ChaosUtils window. */
+	private static boolean canOpen(Minecraft client) {
+		return client.screen == null || client.screen instanceof dev.chaosutils.gui.ChaosScreen;
 	}
 
 	private static void openMenu(Minecraft client) {
@@ -135,9 +156,19 @@ public final class RadialMenuFeature implements Feature {
 		client.setScreen(screen);
 	}
 
-	/** Called by the screen when it closes itself (Escape or a click outside). */
+	/** Accessor for the overlay gate: HUD elements hide while the menu is up. */
+	public static boolean isOpen() {
+		return open != null;
+	}
+
+	public static boolean scalesToScreen() {
+		return autoScale == null || autoScale.get();
+	}
+
+	/** Called by the screen once its exit animation finished. */
 	static void onClosed() {
 		open = null;
+		wasHeld = false;
 	}
 
 	public static List<RadialElement> entries() {
@@ -263,5 +294,6 @@ public final class RadialMenuFeature implements Feature {
 			open.cancel();
 			open = null;
 		}
+		wasHeld = false;
 	}
 }

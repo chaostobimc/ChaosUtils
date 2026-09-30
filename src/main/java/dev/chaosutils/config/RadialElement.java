@@ -51,6 +51,16 @@ public final class RadialElement {
 		this.type = type;
 	}
 
+	/** Colour with a guaranteed opaque alpha, safe for fills and borders. */
+	public int solidColor() {
+		return color | 0xFF000000;
+	}
+
+	/** Colour with the given alpha, keeping the stored hue. */
+	public int colorWithAlpha(float alpha) {
+		return dev.chaosutils.util.Render.alpha(color | 0xFF000000, alpha);
+	}
+
 	public ItemStack iconStack() {
 		return ItemLookup.stack(icon);
 	}

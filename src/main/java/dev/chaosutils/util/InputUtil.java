@@ -54,6 +54,35 @@ public final class InputUtil {
 		}
 	}
 
+	/**
+	 * Whether the physical key of a key binding is held right now.
+	 *
+	 * <p>{@code KeyMapping#isDown()} is not usable inside a screen: opening one makes the game call
+	 * {@code KeyMapping.releaseAll()} and, from then on, the keyboard handler stops feeding key
+	 * states to key bindings. GLFW is the only source that still knows the truth, so the mapping's
+	 * key is read through a mixin accessor and polled directly.
+	 */
+	public static boolean isPhysicallyDown(net.minecraft.client.KeyMapping mapping) {
+		if (mapping == null) {
+			return false;
+		}
+		try {
+			com.mojang.blaze3d.platform.InputConstants.Key key =
+					((dev.chaosutils.mixin.KeyMappingAccessor) (Object) mapping).chaosutils$key();
+			if (key == null || key == com.mojang.blaze3d.platform.InputConstants.UNKNOWN) {
+				return false;
+			}
+			long window = Minecraft.getInstance().getWindow().handle();
+			if (key.getType() == com.mojang.blaze3d.platform.InputConstants.Type.MOUSE) {
+				return org.lwjgl.glfw.GLFW.glfwGetMouseButton(window, key.getValue()) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+			}
+			return com.mojang.blaze3d.platform.InputConstants.isKeyDown(Minecraft.getInstance().getWindow(), key.getValue());
+		} catch (Throwable ignored) {
+			// If the accessor or the window is unavailable, fall back to the vanilla state.
+			return mapping.isDown();
+		}
+	}
+
 	public static int mouseButtonToCode(int button) {
 		return -100 - button;
 	}

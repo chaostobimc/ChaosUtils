@@ -38,6 +38,8 @@ public final class ChaosConfig {
 
 	public static final List<RadialElement> RADIAL_ELEMENTS = new ArrayList<>();
 	public static final List<Waypoint> WAYPOINTS = new ArrayList<>();
+	/** Free-form UI state (window position, sizes, remembered selections). */
+	private static final JsonObject UI_STATE = new JsonObject();
 
 	private static boolean dirty;
 	private static boolean loaded;
@@ -52,6 +54,52 @@ public final class ChaosConfig {
 
 	public static boolean isDirty() {
 		return dirty;
+	}
+
+	// ------------------------------------------------------------- UI state
+
+	/** Reads a remembered number (window position, size, ...) with a safe fallback. */
+	public static float uiFloat(String key, float fallback) {
+		try {
+			JsonElement element = UI_STATE.get(key);
+			return element == null || element.isJsonNull() ? fallback : element.getAsFloat();
+		} catch (Exception exception) {
+			return fallback;
+		}
+	}
+
+	public static int uiInt(String key, int fallback) {
+		return Math.round(uiFloat(key, fallback));
+	}
+
+	public static boolean uiBoolean(String key, boolean fallback) {
+		try {
+			JsonElement element = UI_STATE.get(key);
+			return element == null || element.isJsonNull() ? fallback : element.getAsBoolean();
+		} catch (Exception exception) {
+			return fallback;
+		}
+	}
+
+	public static String uiString(String key, String fallback) {
+		try {
+			JsonElement element = UI_STATE.get(key);
+			return element == null || element.isJsonNull() ? fallback : element.getAsString();
+		} catch (Exception exception) {
+			return fallback;
+		}
+	}
+
+	/** Stores a value; the 5-second autosave writes it to disk. */
+	public static void setUi(String key, Object value) {
+		if (value instanceof Number number) {
+			UI_STATE.addProperty(key, number);
+		} else if (value instanceof Boolean flag) {
+			UI_STATE.addProperty(key, flag);
+		} else {
+			UI_STATE.addProperty(key, String.valueOf(value));
+		}
+		markDirty();
 	}
 
 	/** Called once per client tick from the main tick hook; writes at most every 5 seconds. */
@@ -98,6 +146,14 @@ public final class ChaosConfig {
 					RADIAL_ELEMENTS.addAll(parsedElements);
 				}
 			}
+			if (root.has("ui") && root.get("ui").isJsonObject()) {
+				for (String key : new ArrayList<>(UI_STATE.keySet())) {
+					UI_STATE.remove(key);
+				}
+				for (java.util.Map.Entry<String, JsonElement> entry : root.getAsJsonObject("ui").entrySet()) {
+					UI_STATE.add(entry.getKey(), entry.getValue());
+				}
+			}
 			if (root.has("waypoints") && root.get("waypoints").isJsonArray()) {
 				List<Waypoint> parsedWaypoints = new ArrayList<>();
 				for (JsonElement element : root.getAsJsonArray("waypoints")) {
@@ -132,6 +188,7 @@ public final class ChaosConfig {
 		root.add("settings", settings);
 		root.add("radial", GSON.toJsonTree(RADIAL_ELEMENTS));
 		root.add("waypoints", GSON.toJsonTree(WAYPOINTS));
+		root.add("ui", UI_STATE);
 		try {
 			Files.createDirectories(FILE.getParent());
 			Path temp = FILE.resolveSibling(FILE.getFileName() + ".tmp");

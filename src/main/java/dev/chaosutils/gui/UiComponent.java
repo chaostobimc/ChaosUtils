@@ -8,12 +8,12 @@ import net.minecraft.client.gui.GuiGraphics;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * Lightweight GUI element.
+ * Lightweight GUI element of the ChaosUtils interface.
  *
- * <p>ChaosUtils deliberately uses its own component model instead of vanilla's widget
- * hierarchy: the input signatures of {@code AbstractWidget} changed with the 1.21.9 input
- * rework, and owning the model lets every element animate smoothly (hover glow, press
- * depth, expand/collapse) with shared timing instead of per-widget tweens.
+ * <p>ChaosUtils deliberately does not use the vanilla widget hierarchy: the input signatures of
+ * {@code AbstractWidget} move around between renderer rewrites, and owning the model is what lets
+ * every element animate with shared timing (hover lift, press depth, entrance stagger) without
+ * each widget carrying its own tweens.
  */
 public abstract class UiComponent {
 	protected float x;
@@ -24,11 +24,15 @@ public abstract class UiComponent {
 	protected boolean enabled = true;
 	protected String tooltip;
 
-	/** 0..1 hover amount, animated. */
-	protected final Anim.Value hover = new Anim.Value(0.0F, 14.0F);
-	/** 0..1 "activated" amount used for press feedback and toggles. */
-	protected final Anim.Value active = new Anim.Value(0.0F, 10.0F);
+	/** Layer alpha handed down by the owning screen (window fade in/out). */
+	protected float layerAlpha = 1.0F;
+	/** Entrance animation: 0 hidden, 1 fully placed. */
+	protected final Anim.Value appear = new Anim.Value(0.0F, 9.0F);
+	protected final Anim.Value hover = new Anim.Value(0.0F, 16.0F);
+	protected final Anim.Value active = new Anim.Value(0.0F, 12.0F);
+	protected final Anim.Value focus = new Anim.Value(0.0F, 11.0F);
 
+	private float appearDelay;
 	private final List<UiComponent> children = new ArrayList<>();
 
 	public UiComponent setBounds(float x, float y, float width, float height) {
@@ -41,6 +45,18 @@ public abstract class UiComponent {
 
 	public UiComponent setTooltip(@Nullable String tooltip) {
 		this.tooltip = tooltip;
+		return this;
+	}
+
+	/** Seconds to wait before this element animates in; used for staggered lists. */
+	public UiComponent setAppearDelay(float seconds) {
+		this.appearDelay = Math.max(0.0F, seconds);
+		return this;
+	}
+
+	public UiComponent snapAppear() {
+		this.appearDelay = 0.0F;
+		this.appear.snap(1.0F);
 		return this;
 	}
 
@@ -72,6 +88,14 @@ public abstract class UiComponent {
 		return x + width;
 	}
 
+	public float centerX() {
+		return x + width * 0.5F;
+	}
+
+	public float centerY() {
+		return y + height * 0.5F;
+	}
+
 	public boolean isVisible() {
 		return visible;
 	}
@@ -86,6 +110,23 @@ public abstract class UiComponent {
 
 	public boolean isEnabled() {
 		return enabled;
+	}
+
+	public void setLayerAlpha(float alpha) {
+		this.layerAlpha = Anim.clamp01(alpha);
+		for (UiComponent child : children) {
+			child.setLayerAlpha(alpha);
+		}
+	}
+
+	/** Combined alpha of this element: layer alpha times entrance animation. */
+	protected float alpha() {
+		return layerAlpha * Anim.clamp01(appear.get());
+	}
+
+	/** Pixel offset applied while the element is still animating in. */
+	protected float appearOffset() {
+		return (1.0F - Anim.easeOutQuint(appear.get())) * 6.0F;
 	}
 
 	public boolean contains(float mouseX, float mouseY) {
@@ -105,11 +146,18 @@ public abstract class UiComponent {
 	}
 
 	public void update(float deltaSeconds, float mouseX, float mouseY) {
+		if (appearDelay > 0.0F) {
+			appearDelay = Math.max(0.0F, appearDelay - deltaSeconds);
+		}
+		appear.set(appearDelay > 0.0F ? 0.0F : 1.0F);
+		appear.update(UiTheme.get().speed(9.0F));
 		float hovering = enabled && visible && contains(mouseX, mouseY) ? 1.0F : 0.0F;
 		hover.set(hovering);
-		hover.update(deltaSeconds);
-		active.update(deltaSeconds);
+		hover.update(UiTheme.get().speed(16.0F));
+		active.update(UiTheme.get().speed(12.0F));
+		focus.update(UiTheme.get().speed(11.0F));
 		for (UiComponent child : children) {
+			child.setLayerAlpha(layerAlpha);
 			child.update(deltaSeconds, mouseX, mouseY);
 		}
 	}
@@ -173,19 +221,16 @@ public abstract class UiComponent {
 		return false;
 	}
 
-	/** Content height used by scroll layouts; may exceed {@link #height}. */
-	public float contentHeight() {
-		float max = height;
-		for (UiComponent child : children) {
-			max = Math.max(max, child.y() - y + child.contentHeight());
-		}
-		return max;
+	/** Rebuilds children after a data change while keeping the current scroll position. */
+	public void refresh() {
 	}
 
-	/** Called when a component becomes hidden so it can drop transient state (keeps memory flat). */
+	/** Called when a component is taken out of the tree so it can drop transient state. */
 	public void reset() {
 		hover.snap(0.0F);
 		active.snap(0.0F);
+		focus.snap(0.0F);
+		appear.snap(0.0F);
 		for (UiComponent child : children) {
 			child.reset();
 		}

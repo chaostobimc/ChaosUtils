@@ -60,6 +60,41 @@ public final class Anim {
 		return x >= 1.0F ? 1.0F : 1.0F - (float) Math.pow(2.0, -10.0 * x);
 	}
 
+	public static float easeOutQuad(float t) {
+		float x = clamp01(t);
+		return 1.0F - (1.0F - x) * (1.0F - x);
+	}
+
+	public static float easeOutQuint(float t) {
+		float x = clamp01(t);
+		float inverted = 1.0F - x;
+		return 1.0F - inverted * inverted * inverted * inverted * inverted;
+	}
+
+	public static float easeInOutSine(float t) {
+		float x = clamp01(t);
+		return (float) (-(Math.cos(Math.PI * x) - 1.0) * 0.5);
+	}
+
+	public static float smoothstep(float t) {
+		float x = clamp01(t);
+		return x * x * (3.0F - 2.0F * x);
+	}
+
+	/** No-jitter approach with a half-life; ideal for mouse-following UI elements. */
+	public static float damped(float current, float target, float halfLifeSeconds, float deltaSeconds) {
+		float hl = Math.max(0.001F, halfLifeSeconds);
+		float factor = 1.0F - (float) Math.pow(0.5, Math.max(0.0F, deltaSeconds) / hl);
+		return current + (target - current) * factor;
+	}
+
+	/** 0 -> 1 -> 0 over {@code period} seconds, used for pulsing highlights. */
+	public static float pulse(float timeSeconds, float period) {
+		float p = Math.max(0.05F, period);
+		float phase = (timeSeconds % p) / p;
+		return (float) (0.5 - 0.5 * Math.cos(phase * Math.PI * 2.0));
+	}
+
 	/** A spring value that keeps a velocity so it can overshoot and settle. */
 	public static final class Spring {
 		private float value;

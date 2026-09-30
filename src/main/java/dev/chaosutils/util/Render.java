@@ -145,11 +145,14 @@ public final class Render {
 	}
 
 	/**
-	 * Filled ring segment (annulus sector), drawn as a fan of short radial bars.
+	 * Filled ring segment (annulus sector).
 	 *
-	 * <p>This is what the radial menu is built from: the number of bars is derived from the
-	 * angle so a 45° slice costs roughly twenty quads and the result looks smooth, while the
-	 * whole menu stays a handful of draw calls.
+	 * <p>Rendered as a scanline fill of the underlying trapezoid, subdivided every 15° so the
+	 * straight inner/outer chords stay within a fraction of a pixel of the true arc. That is
+	 * what makes the radial menu look like a drawn shape instead of a fan of blocks: every row
+	 * is a single quad and neighbouring slices can never bleed into each other.
+	 *
+	 * <p>Angles are in degrees, {@code 0} pointing up and growing clockwise.
 	 */
 	public static void arc(GuiGraphics graphics, float centerX, float centerY, float innerRadius, float outerRadius,
 			float startDegrees, float endDegrees, int color) {
@@ -157,19 +160,277 @@ public final class Render {
 			return;
 		}
 		float span = endDegrees - startDegrees;
-		if (Math.abs(span) < 0.05F) {
+		if (Math.abs(span) < 0.02F) {
 			return;
 		}
-		int steps = Math.max(2, Math.min(64, Math.round(Math.abs(span) / 3.0F)));
-		float stepSpan = span / steps;
-		float midRadius = (innerRadius + outerRadius) * 0.5F;
-		float thickness = Math.max(2.0F, (float) (Math.abs(Math.toRadians(stepSpan)) * midRadius));
-		for (int i = 0; i < steps; i++) {
-			double angle = Math.toRadians(startDegrees + (i + 0.5F) * stepSpan);
-			float sin = (float) Math.sin(angle);
-			float cos = (float) Math.cos(angle);
-			line(graphics, centerX + sin * innerRadius, centerY - cos * innerRadius,
-					centerX + sin * outerRadius, centerY - cos * outerRadius, thickness, color);
+		int parts = Math.max(1, (int) Math.ceil(Math.abs(span) / 15.0F));
+		float step = span / parts;
+		for (int i = 0; i < parts; i++) {
+			trapezoid(graphics, centerX, centerY, innerRadius, outerRadius,
+					startDegrees + i * step, startDegrees + (i + 1) * step, color);
+		}
+	}
+
+	private static void trapezoid(GuiGraphics graphics, float centerX, float centerY, float innerRadius,
+			float outerRadius, float startDegrees, float endDegrees, int color) {
+		double start = Math.toRadians(startDegrees);
+		double end = Math.toRadians(endDegrees);
+		float[] xs = new float[4];
+		float[] ys = new float[4];
+		setCorner(xs, ys, 0, centerX, centerY, innerRadius, start);
+		setCorner(xs, ys, 1, centerX, centerY, outerRadius, start);
+		setCorner(xs, ys, 2, centerX, centerY, outerRadius, end);
+		setCorner(xs, ys, 3, centerX, centerY, innerRadius, end);
+		float minY = Math.min(Math.min(ys[0], ys[1]), Math.min(ys[2], ys[3]));
+		float maxY = Math.max(Math.max(ys[0], ys[1]), Math.max(ys[2], ys[3]));
+		if (maxY - minY > 240.0F) {
+			// Safety valve: never let a malformed angle flood the screen with rows.
+			return;
+		}
+		int y0 = (int) Math.floor(minY);
+		int y1 = (int) Math.ceil(maxY);
+		int rows = Math.max(1, y1 - y0);
+		int rowStep = rows > 160 ? 3 : (rows > 80 ? 2 : 1);
+		float half = rowStep * 0.5F;
+		for (int row = y0; row < y1; row += rowStep) {
+			float sample = row + half;
+			float left = Float.MAX_VALUE;
+			float right = -Float.MAX_VALUE;
+			for (int edge = 0; edge < 4; edge++) {
+				int next = (edge + 1) & 3;
+				float ay = ys[edge];
+				float by = ys[next];
+				if ((ay <= sample && by >= sample) || (by <= sample && ay >= sample)) {
+					float t = Math.abs(by - ay) < 1.0E-4F ? 0.5F : (sample - ay) / (by - ay);
+					float x = xs[edge] + (xs[next] - xs[edge]) * t;
+					left = Math.min(left, x);
+					right = Math.max(right, x);
+				}
+			}
+			if (right > left) {
+				rect(graphics, left, row, right - left, rowStep + 0.5F, color);
+			}
+		}
+	}
+
+	private static void setCorner(float[] xs, float[] ys, int index, float centerX, float centerY, float radius, double angle) {
+		xs[index] = centerX + (float) Math.sin(angle) * radius;
+		ys[index] = centerY - (float) Math.cos(angle) * radius;
+	}
+
+	/** Filled circle (scanline, so the outline stays smooth at any size). */
+	public static void circle(GuiGraphics graphics, float centerX, float centerY, float radius, int color) {
+		if (radius <= 0.5F || alphaOf(color) == 0) {
+			return;
+		}
+		int y0 = Math.round(centerY - radius);
+		int y1 = Math.round(centerY + radius);
+		for (int row = y0; row <= y1; row++) {
+			float dy = row + 0.5F - centerY;
+			float half = radius * radius - dy * dy;
+			if (half <= 0.0F) {
+				continue;
+			}
+			half = (float) Math.sqrt(half);
+			rect(graphics, centerX - half, row, half * 2.0F, 1.0F, color);
+		}
+	}
+
+	/** Ring outline drawn from four edges and four quarter arcs (cheap, stays crisp). */
+	public static void ring(GuiGraphics graphics, float x, float y, float width, float height, float radius,
+			float thickness, int color) {
+		if (width <= 0.0F || height <= 0.0F || alphaOf(color) == 0) {
+			return;
+		}
+		float t = Math.max(1.0F, thickness);
+		float r = Math.min(radius, Math.min(width, height) * 0.5F);
+		if (r < 1.0F) {
+			rect(graphics, x, y, width, t, color);
+			rect(graphics, x, y + height - t, width, t, color);
+			rect(graphics, x, y, t, height, color);
+			rect(graphics, x + width - t, y, t, height, color);
+			return;
+		}
+		rect(graphics, x + r, y, width - r * 2.0F, t, color);
+		rect(graphics, x + r, y + height - t, width - r * 2.0F, t, color);
+		rect(graphics, x, y + r, t, height - r * 2.0F, color);
+		rect(graphics, x + width - t, y + r, t, height - r * 2.0F, color);
+		int steps = Math.max(3, Math.round(r));
+		for (int i = 0; i <= steps; i++) {
+			double angle = Math.PI * 0.5 * i / steps;
+			float ox = (float) Math.cos(angle) * r;
+			float oy = (float) Math.sin(angle) * r;
+			// top-left, top-right, bottom-right, bottom-left
+			rect(graphics, x + r - ox, y + r - oy, t, t, color);
+			rect(graphics, x + width - r + ox - t, y + r - oy, t, t, color);
+			rect(graphics, x + width - r + ox - t, y + height - r + oy - t, t, t, color);
+			rect(graphics, x + r - ox, y + height - r + oy - t, t, t, color);
+		}
+	}
+
+	/**
+	 * Rounded rectangle filled with a vertical gradient.
+	 *
+	 * <p>Two-pixel scanlines with the corner inset applied per row, which is both smoother and
+	 * cheaper than stacking a flat rounded rect and a gradient on top of each other.
+	 */
+	public static void roundedRectGradient(GuiGraphics graphics, float x, float y, float width, float height,
+			float radius, int top, int bottom) {
+		if (width <= 0.0F || height <= 0.0F) {
+			return;
+		}
+		float r = Math.min(radius, Math.min(width, height) * 0.5F);
+		int rows = Math.max(1, Math.round(height));
+		int step = rows > 140 ? 2 : 1;
+		for (int row = 0; row < rows; row += step) {
+			float inset = Math.max(cornerInset(row, rows, r), cornerInset(rows - 1 - row, rows, r));
+			int color = mix(top, bottom, (row + step * 0.5F) / (float) rows);
+			rect(graphics, x + inset, y + row, width - inset * 2.0F, step + 0.5F, color);
+		}
+	}
+
+	private static float cornerInset(int row, int rows, float radius) {
+		float r = Math.min(radius, rows * 0.5F);
+		if (r < 1.0F || row >= r) {
+			return 0.0F;
+		}
+		float dy = Math.max(0.0F, r - row - 0.5F);
+		return (float) (r - Math.sqrt(Math.max(0.0, r * r - dy * dy)));
+	}
+
+	/**
+	 * Soft drop shadow: a handful of oversized rounded rectangles with a low alpha each.
+	 * Much cheaper than a blur pass and it scales with the window without a texture.
+	 */
+	public static void softShadow(GuiGraphics graphics, float x, float y, float width, float height, float radius,
+			float strength) {
+		float s = clamp01(strength);
+		if (s <= 0.01F || width <= 0.0F || height <= 0.0F) {
+			return;
+		}
+		int layers = 6;
+		for (int i = layers; i >= 1; i--) {
+			float spread = i * 1.8F;
+			int alpha = Math.round(11.0F * s * (1.0F - i / (float) (layers + 1)) + 4.0F * s);
+			roundedRect(graphics, x - spread, y - spread + 2.5F, width + spread * 2.0F, height + spread * 2.0F,
+					radius + spread * 0.8F, (alpha & 0xFF) << 24);
+		}
+	}
+
+	/**
+	 * Accent glow. Drawn with a tinted blit of the radial {@code glow.png} that ships with the
+	 * mod (one quad), so highlights stay soft instead of banding like stacked rectangles.
+	 * Falls back to concentric circles if the texture cannot be resolved.
+	 */
+	private static final net.minecraft.resources.Identifier GLOW_TEXTURE =
+			net.minecraft.resources.Identifier.fromNamespaceAndPath("chaosutils", "textures/gui/glow.png");
+	private static boolean glowTextureAvailable = true;
+
+	public static void glow(GuiGraphics graphics, float centerX, float centerY, float radius, int color, float strength) {
+		float s = clamp01(strength);
+		if (radius < 2.0F || s <= 0.01F || alphaOf(color) == 0) {
+			return;
+		}
+		int argb = scaleAlpha(color, s);
+		if (glowTextureAvailable && blitTexture(graphics, GLOW_TEXTURE, centerX - radius, centerY - radius,
+				radius * 2.0F, radius * 2.0F, argb)) {
+			return;
+		}
+		glowTextureAvailable = false;
+		int steps = 5;
+		for (int i = steps; i >= 1; i--) {
+			circle(graphics, centerX, centerY, radius * i / steps, scaleAlpha(color, s * 0.12F));
+		}
+	}
+
+	/** Soft accent halo behind a rounded panel; cheap and works without any texture. */
+	public static void halo(GuiGraphics graphics, float x, float y, float width, float height, float radius,
+			int color, float strength) {
+		float s = clamp01(strength);
+		if (s <= 0.01F || width <= 0.0F || height <= 0.0F) {
+			return;
+		}
+		int layers = 5;
+		for (int i = layers; i >= 1; i--) {
+			float spread = i * 2.0F;
+			roundedRect(graphics, x - spread, y - spread, width + spread * 2.0F, height + spread * 2.0F,
+					radius + spread * 0.9F, scaleAlpha(color, s * 0.075F * (1.0F - i / (float) (layers + 1))));
+		}
+	}
+
+	/**
+	 * Tinted texture blit through the vanilla GUI pipeline.
+	 *
+	 * @return {@code true} when the texture was drawn, {@code false} when it could not be found
+	 *         (the caller then uses its geometric fallback).
+	 */
+	public static boolean blitTexture(GuiGraphics graphics, net.minecraft.resources.Identifier texture,
+			float x, float y, float width, float height, int color) {
+		if (width < 1.0F || height < 1.0F) {
+			return false;
+		}
+		int x0 = Math.round(x);
+		int y0 = Math.round(y);
+		int x1 = Math.round(x + width);
+		int y1 = Math.round(y + height);
+		try {
+			if (net.minecraft.client.Minecraft.getInstance().getResourceManager().getResource(texture).isEmpty()) {
+				return false;
+			}
+			graphics.blit(com.mojang.blaze3d.pipeline.RenderPipelines.GUI_TEXTURED, texture, x0, y0, 0.0F, 0.0F,
+					x1 - x0, y1 - y0, 128, 128, 128, 128, color);
+			return true;
+		} catch (Throwable throwable) {
+			return false;
+		}
+	}
+
+	/** Tint colour over an existing area - used for hover highlights that must not hide content. */
+	public static void wash(GuiGraphics graphics, float x, float y, float width, float height, float radius, int color, float amount) {
+		roundedRect(graphics, x, y, width, height, radius, scaleAlpha(color, amount));
+	}
+
+	// ------------------------------------------------------------ text helpers
+
+	/** Truncates with an ellipsis so it fits {@code maxWidth} device pixels. */
+	public static String ellipsize(net.minecraft.client.gui.Font font, String value, float maxWidth) {
+		if (value == null) {
+			return "";
+		}
+		if (font.width(value) <= maxWidth) {
+			return value;
+		}
+		String result = value;
+		while (result.length() > 4 && font.width(result + "…") > maxWidth) {
+			result = result.substring(0, result.length() - 2);
+		}
+		return result + "…";
+	}
+
+	/**
+	 * Heavier text without giving up the colour control: drawing the string twice with a half
+	 * pixel offset is exactly what the vanilla bold style does, but it keeps our own alpha.
+	 */
+	public static void boldText(GuiGraphics graphics, net.minecraft.client.gui.Font font, String value, float x, float y,
+			int color, boolean shadow) {
+		text(graphics, font, value, x, y, color, shadow);
+		text(graphics, font, value, x + 0.7F, y, color, shadow);
+	}
+
+	/** Horizontal gradient text, drawn in three-character runs to keep the draw count tiny. */
+	public static void gradientText(GuiGraphics graphics, net.minecraft.client.gui.Font font, String value,
+			float x, float y, int from, int to, boolean shadow) {
+		if (value == null || value.isEmpty()) {
+			return;
+		}
+		int length = value.length();
+		float cursor = x;
+		int run = 3;
+		for (int start = 0; start < length; start += run) {
+			String part = value.substring(start, Math.min(length, start + run));
+			int color = mix(from, to, start / (float) Math.max(1, length - 1));
+			text(graphics, font, part, cursor, y, color, shadow);
+			cursor += font.width(part);
 		}
 	}
 

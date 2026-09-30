@@ -247,6 +247,7 @@ logs/
 		"EntityMixin",
 		"GameRendererMixin",
 		"GuiMixin",
+		"KeyMappingAccessor",
 		"MouseHandlerMixin",
 		"ParticleEngineMixin",
 		"SoundEngineMixin"
@@ -501,6 +502,8 @@ public final class ChaosConfig {
 
 	public static final List<RadialElement> RADIAL_ELEMENTS = new ArrayList<>();
 	public static final List<Waypoint> WAYPOINTS = new ArrayList<>();
+	/** Free-form UI state (window position, sizes, remembered selections). */
+	private static final JsonObject UI_STATE = new JsonObject();
 
 	private static boolean dirty;
 	private static boolean loaded;
@@ -515,6 +518,52 @@ public final class ChaosConfig {
 
 	public static boolean isDirty() {
 		return dirty;
+	}
+
+	// ------------------------------------------------------------- UI state
+
+	/** Reads a remembered number (window position, size, ...) with a safe fallback. */
+	public static float uiFloat(String key, float fallback) {
+		try {
+			JsonElement element = UI_STATE.get(key);
+			return element == null || element.isJsonNull() ? fallback : element.getAsFloat();
+		} catch (Exception exception) {
+			return fallback;
+		}
+	}
+
+	public static int uiInt(String key, int fallback) {
+		return Math.round(uiFloat(key, fallback));
+	}
+
+	public static boolean uiBoolean(String key, boolean fallback) {
+		try {
+			JsonElement element = UI_STATE.get(key);
+			return element == null || element.isJsonNull() ? fallback : element.getAsBoolean();
+		} catch (Exception exception) {
+			return fallback;
+		}
+	}
+
+	public static String uiString(String key, String fallback) {
+		try {
+			JsonElement element = UI_STATE.get(key);
+			return element == null || element.isJsonNull() ? fallback : element.getAsString();
+		} catch (Exception exception) {
+			return fallback;
+		}
+	}
+
+	/** Stores a value; the 5-second autosave writes it to disk. */
+	public static void setUi(String key, Object value) {
+		if (value instanceof Number number) {
+			UI_STATE.addProperty(key, number);
+		} else if (value instanceof Boolean flag) {
+			UI_STATE.addProperty(key, flag);
+		} else {
+			UI_STATE.addProperty(key, String.valueOf(value));
+		}
+		markDirty();
 	}
 
 	/** Called once per client tick from the main tick hook; writes at most every 5 seconds. */
@@ -561,6 +610,14 @@ public final class ChaosConfig {
 					RADIAL_ELEMENTS.addAll(parsedElements);
 				}
 			}
+			if (root.has("ui") && root.get("ui").isJsonObject()) {
+				for (String key : new ArrayList<>(UI_STATE.keySet())) {
+					UI_STATE.remove(key);
+				}
+				for (java.util.Map.Entry<String, JsonElement> entry : root.getAsJsonObject("ui").entrySet()) {
+					UI_STATE.add(entry.getKey(), entry.getValue());
+				}
+			}
 			if (root.has("waypoints") && root.get("waypoints").isJsonArray()) {
 				List<Waypoint> parsedWaypoints = new ArrayList<>();
 				for (JsonElement element : root.getAsJsonArray("waypoints")) {
@@ -595,6 +652,7 @@ public final class ChaosConfig {
 		root.add("settings", settings);
 		root.add("radial", GSON.toJsonTree(RADIAL_ELEMENTS));
 		root.add("waypoints", GSON.toJsonTree(WAYPOINTS));
+		root.add("ui", UI_STATE);
 		try {
 			Files.createDirectories(FILE.getParent());
 			Path temp = FILE.resolveSibling(FILE.getFileName() + ".tmp");
@@ -903,6 +961,16 @@ public final class RadialElement {
 		this.color = color;
 		this.icon = icon;
 		this.type = type;
+	}
+
+	/** Colour with a guaranteed opaque alpha, safe for fills and borders. */
+	public int solidColor() {
+		return color | 0xFF000000;
+	}
+
+	/** Colour with the given alpha, keeping the stored hue. */
+	public int colorWithAlpha(float alpha) {
+		return dev.chaosutils.util.Render.alpha(color | 0xFF000000, alpha);
 	}
 
 	public ItemStack iconStack() {
@@ -2128,6 +2196,41 @@ public final class Anim {
 		return x >= 1.0F ? 1.0F : 1.0F - (float) Math.pow(2.0, -10.0 * x);
 	}
 
+	public static float easeOutQuad(float t) {
+		float x = clamp01(t);
+		return 1.0F - (1.0F - x) * (1.0F - x);
+	}
+
+	public static float easeOutQuint(float t) {
+		float x = clamp01(t);
+		float inverted = 1.0F - x;
+		return 1.0F - inverted * inverted * inverted * inverted * inverted;
+	}
+
+	public static float easeInOutSine(float t) {
+		float x = clamp01(t);
+		return (float) (-(Math.cos(Math.PI * x) - 1.0) * 0.5);
+	}
+
+	public static float smoothstep(float t) {
+		float x = clamp01(t);
+		return x * x * (3.0F - 2.0F * x);
+	}
+
+	/** No-jitter approach with a half-life; ideal for mouse-following UI elements. */
+	public static float damped(float current, float target, float halfLifeSeconds, float deltaSeconds) {
+		float hl = Math.max(0.001F, halfLifeSeconds);
+		float factor = 1.0F - (float) Math.pow(0.5, Math.max(0.0F, deltaSeconds) / hl);
+		return current + (target - current) * factor;
+	}
+
+	/** 0 -> 1 -> 0 over {@code period} seconds, used for pulsing highlights. */
+	public static float pulse(float timeSeconds, float period) {
+		float p = Math.max(0.05F, period);
+		float phase = (timeSeconds % p) / p;
+		return (float) (0.5 - 0.5 * Math.cos(phase * Math.PI * 2.0));
+	}
+
 	/** A spring value that keeps a velocity so it can overshoot and settle. */
 	public static final class Spring {
 		private float value;
@@ -2442,6 +2545,35 @@ public final class InputUtil {
 			return InputConstants.isKeyDown(client.getWindow(), code);
 		} catch (Throwable ignored) {
 			return false;
+		}
+	}
+
+	/**
+	 * Whether the physical key of a key binding is held right now.
+	 *
+	 * <p>{@code KeyMapping#isDown()} is not usable inside a screen: opening one makes the game call
+	 * {@code KeyMapping.releaseAll()} and, from then on, the keyboard handler stops feeding key
+	 * states to key bindings. GLFW is the only source that still knows the truth, so the mapping's
+	 * key is read through a mixin accessor and polled directly.
+	 */
+	public static boolean isPhysicallyDown(net.minecraft.client.KeyMapping mapping) {
+		if (mapping == null) {
+			return false;
+		}
+		try {
+			com.mojang.blaze3d.platform.InputConstants.Key key =
+					((dev.chaosutils.mixin.KeyMappingAccessor) (Object) mapping).chaosutils$key();
+			if (key == null || key == com.mojang.blaze3d.platform.InputConstants.UNKNOWN) {
+				return false;
+			}
+			long window = Minecraft.getInstance().getWindow().handle();
+			if (key.getType() == com.mojang.blaze3d.platform.InputConstants.Type.MOUSE) {
+				return org.lwjgl.glfw.GLFW.glfwGetMouseButton(window, key.getValue()) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+			}
+			return com.mojang.blaze3d.platform.InputConstants.isKeyDown(Minecraft.getInstance().getWindow(), key.getValue());
+		} catch (Throwable ignored) {
+			// If the accessor or the window is unavailable, fall back to the vanilla state.
+			return mapping.isDown();
 		}
 	}
 
@@ -2969,11 +3101,14 @@ public final class Render {
 	}
 
 	/**
-	 * Filled ring segment (annulus sector), drawn as a fan of short radial bars.
+	 * Filled ring segment (annulus sector).
 	 *
-	 * <p>This is what the radial menu is built from: the number of bars is derived from the
-	 * angle so a 45° slice costs roughly twenty quads and the result looks smooth, while the
-	 * whole menu stays a handful of draw calls.
+	 * <p>Rendered as a scanline fill of the underlying trapezoid, subdivided every 15° so the
+	 * straight inner/outer chords stay within a fraction of a pixel of the true arc. That is
+	 * what makes the radial menu look like a drawn shape instead of a fan of blocks: every row
+	 * is a single quad and neighbouring slices can never bleed into each other.
+	 *
+	 * <p>Angles are in degrees, {@code 0} pointing up and growing clockwise.
 	 */
 	public static void arc(GuiGraphics graphics, float centerX, float centerY, float innerRadius, float outerRadius,
 			float startDegrees, float endDegrees, int color) {
@@ -2981,19 +3116,277 @@ public final class Render {
 			return;
 		}
 		float span = endDegrees - startDegrees;
-		if (Math.abs(span) < 0.05F) {
+		if (Math.abs(span) < 0.02F) {
 			return;
 		}
-		int steps = Math.max(2, Math.min(64, Math.round(Math.abs(span) / 3.0F)));
-		float stepSpan = span / steps;
-		float midRadius = (innerRadius + outerRadius) * 0.5F;
-		float thickness = Math.max(2.0F, (float) (Math.abs(Math.toRadians(stepSpan)) * midRadius));
-		for (int i = 0; i < steps; i++) {
-			double angle = Math.toRadians(startDegrees + (i + 0.5F) * stepSpan);
-			float sin = (float) Math.sin(angle);
-			float cos = (float) Math.cos(angle);
-			line(graphics, centerX + sin * innerRadius, centerY - cos * innerRadius,
-					centerX + sin * outerRadius, centerY - cos * outerRadius, thickness, color);
+		int parts = Math.max(1, (int) Math.ceil(Math.abs(span) / 15.0F));
+		float step = span / parts;
+		for (int i = 0; i < parts; i++) {
+			trapezoid(graphics, centerX, centerY, innerRadius, outerRadius,
+					startDegrees + i * step, startDegrees + (i + 1) * step, color);
+		}
+	}
+
+	private static void trapezoid(GuiGraphics graphics, float centerX, float centerY, float innerRadius,
+			float outerRadius, float startDegrees, float endDegrees, int color) {
+		double start = Math.toRadians(startDegrees);
+		double end = Math.toRadians(endDegrees);
+		float[] xs = new float[4];
+		float[] ys = new float[4];
+		setCorner(xs, ys, 0, centerX, centerY, innerRadius, start);
+		setCorner(xs, ys, 1, centerX, centerY, outerRadius, start);
+		setCorner(xs, ys, 2, centerX, centerY, outerRadius, end);
+		setCorner(xs, ys, 3, centerX, centerY, innerRadius, end);
+		float minY = Math.min(Math.min(ys[0], ys[1]), Math.min(ys[2], ys[3]));
+		float maxY = Math.max(Math.max(ys[0], ys[1]), Math.max(ys[2], ys[3]));
+		if (maxY - minY > 240.0F) {
+			// Safety valve: never let a malformed angle flood the screen with rows.
+			return;
+		}
+		int y0 = (int) Math.floor(minY);
+		int y1 = (int) Math.ceil(maxY);
+		int rows = Math.max(1, y1 - y0);
+		int rowStep = rows > 160 ? 3 : (rows > 80 ? 2 : 1);
+		float half = rowStep * 0.5F;
+		for (int row = y0; row < y1; row += rowStep) {
+			float sample = row + half;
+			float left = Float.MAX_VALUE;
+			float right = -Float.MAX_VALUE;
+			for (int edge = 0; edge < 4; edge++) {
+				int next = (edge + 1) & 3;
+				float ay = ys[edge];
+				float by = ys[next];
+				if ((ay <= sample && by >= sample) || (by <= sample && ay >= sample)) {
+					float t = Math.abs(by - ay) < 1.0E-4F ? 0.5F : (sample - ay) / (by - ay);
+					float x = xs[edge] + (xs[next] - xs[edge]) * t;
+					left = Math.min(left, x);
+					right = Math.max(right, x);
+				}
+			}
+			if (right > left) {
+				rect(graphics, left, row, right - left, rowStep + 0.5F, color);
+			}
+		}
+	}
+
+	private static void setCorner(float[] xs, float[] ys, int index, float centerX, float centerY, float radius, double angle) {
+		xs[index] = centerX + (float) Math.sin(angle) * radius;
+		ys[index] = centerY - (float) Math.cos(angle) * radius;
+	}
+
+	/** Filled circle (scanline, so the outline stays smooth at any size). */
+	public static void circle(GuiGraphics graphics, float centerX, float centerY, float radius, int color) {
+		if (radius <= 0.5F || alphaOf(color) == 0) {
+			return;
+		}
+		int y0 = Math.round(centerY - radius);
+		int y1 = Math.round(centerY + radius);
+		for (int row = y0; row <= y1; row++) {
+			float dy = row + 0.5F - centerY;
+			float half = radius * radius - dy * dy;
+			if (half <= 0.0F) {
+				continue;
+			}
+			half = (float) Math.sqrt(half);
+			rect(graphics, centerX - half, row, half * 2.0F, 1.0F, color);
+		}
+	}
+
+	/** Ring outline drawn from four edges and four quarter arcs (cheap, stays crisp). */
+	public static void ring(GuiGraphics graphics, float x, float y, float width, float height, float radius,
+			float thickness, int color) {
+		if (width <= 0.0F || height <= 0.0F || alphaOf(color) == 0) {
+			return;
+		}
+		float t = Math.max(1.0F, thickness);
+		float r = Math.min(radius, Math.min(width, height) * 0.5F);
+		if (r < 1.0F) {
+			rect(graphics, x, y, width, t, color);
+			rect(graphics, x, y + height - t, width, t, color);
+			rect(graphics, x, y, t, height, color);
+			rect(graphics, x + width - t, y, t, height, color);
+			return;
+		}
+		rect(graphics, x + r, y, width - r * 2.0F, t, color);
+		rect(graphics, x + r, y + height - t, width - r * 2.0F, t, color);
+		rect(graphics, x, y + r, t, height - r * 2.0F, color);
+		rect(graphics, x + width - t, y + r, t, height - r * 2.0F, color);
+		int steps = Math.max(3, Math.round(r));
+		for (int i = 0; i <= steps; i++) {
+			double angle = Math.PI * 0.5 * i / steps;
+			float ox = (float) Math.cos(angle) * r;
+			float oy = (float) Math.sin(angle) * r;
+			// top-left, top-right, bottom-right, bottom-left
+			rect(graphics, x + r - ox, y + r - oy, t, t, color);
+			rect(graphics, x + width - r + ox - t, y + r - oy, t, t, color);
+			rect(graphics, x + width - r + ox - t, y + height - r + oy - t, t, t, color);
+			rect(graphics, x + r - ox, y + height - r + oy - t, t, t, color);
+		}
+	}
+
+	/**
+	 * Rounded rectangle filled with a vertical gradient.
+	 *
+	 * <p>Two-pixel scanlines with the corner inset applied per row, which is both smoother and
+	 * cheaper than stacking a flat rounded rect and a gradient on top of each other.
+	 */
+	public static void roundedRectGradient(GuiGraphics graphics, float x, float y, float width, float height,
+			float radius, int top, int bottom) {
+		if (width <= 0.0F || height <= 0.0F) {
+			return;
+		}
+		float r = Math.min(radius, Math.min(width, height) * 0.5F);
+		int rows = Math.max(1, Math.round(height));
+		int step = rows > 140 ? 2 : 1;
+		for (int row = 0; row < rows; row += step) {
+			float inset = Math.max(cornerInset(row, rows, r), cornerInset(rows - 1 - row, rows, r));
+			int color = mix(top, bottom, (row + step * 0.5F) / (float) rows);
+			rect(graphics, x + inset, y + row, width - inset * 2.0F, step + 0.5F, color);
+		}
+	}
+
+	private static float cornerInset(int row, int rows, float radius) {
+		float r = Math.min(radius, rows * 0.5F);
+		if (r < 1.0F || row >= r) {
+			return 0.0F;
+		}
+		float dy = Math.max(0.0F, r - row - 0.5F);
+		return (float) (r - Math.sqrt(Math.max(0.0, r * r - dy * dy)));
+	}
+
+	/**
+	 * Soft drop shadow: a handful of oversized rounded rectangles with a low alpha each.
+	 * Much cheaper than a blur pass and it scales with the window without a texture.
+	 */
+	public static void softShadow(GuiGraphics graphics, float x, float y, float width, float height, float radius,
+			float strength) {
+		float s = clamp01(strength);
+		if (s <= 0.01F || width <= 0.0F || height <= 0.0F) {
+			return;
+		}
+		int layers = 6;
+		for (int i = layers; i >= 1; i--) {
+			float spread = i * 1.8F;
+			int alpha = Math.round(11.0F * s * (1.0F - i / (float) (layers + 1)) + 4.0F * s);
+			roundedRect(graphics, x - spread, y - spread + 2.5F, width + spread * 2.0F, height + spread * 2.0F,
+					radius + spread * 0.8F, (alpha & 0xFF) << 24);
+		}
+	}
+
+	/**
+	 * Accent glow. Drawn with a tinted blit of the radial {@code glow.png} that ships with the
+	 * mod (one quad), so highlights stay soft instead of banding like stacked rectangles.
+	 * Falls back to concentric circles if the texture cannot be resolved.
+	 */
+	private static final net.minecraft.resources.Identifier GLOW_TEXTURE =
+			net.minecraft.resources.Identifier.fromNamespaceAndPath("chaosutils", "textures/gui/glow.png");
+	private static boolean glowTextureAvailable = true;
+
+	public static void glow(GuiGraphics graphics, float centerX, float centerY, float radius, int color, float strength) {
+		float s = clamp01(strength);
+		if (radius < 2.0F || s <= 0.01F || alphaOf(color) == 0) {
+			return;
+		}
+		int argb = scaleAlpha(color, s);
+		if (glowTextureAvailable && blitTexture(graphics, GLOW_TEXTURE, centerX - radius, centerY - radius,
+				radius * 2.0F, radius * 2.0F, argb)) {
+			return;
+		}
+		glowTextureAvailable = false;
+		int steps = 5;
+		for (int i = steps; i >= 1; i--) {
+			circle(graphics, centerX, centerY, radius * i / steps, scaleAlpha(color, s * 0.12F));
+		}
+	}
+
+	/** Soft accent halo behind a rounded panel; cheap and works without any texture. */
+	public static void halo(GuiGraphics graphics, float x, float y, float width, float height, float radius,
+			int color, float strength) {
+		float s = clamp01(strength);
+		if (s <= 0.01F || width <= 0.0F || height <= 0.0F) {
+			return;
+		}
+		int layers = 5;
+		for (int i = layers; i >= 1; i--) {
+			float spread = i * 2.0F;
+			roundedRect(graphics, x - spread, y - spread, width + spread * 2.0F, height + spread * 2.0F,
+					radius + spread * 0.9F, scaleAlpha(color, s * 0.075F * (1.0F - i / (float) (layers + 1))));
+		}
+	}
+
+	/**
+	 * Tinted texture blit through the vanilla GUI pipeline.
+	 *
+	 * @return {@code true} when the texture was drawn, {@code false} when it could not be found
+	 *         (the caller then uses its geometric fallback).
+	 */
+	public static boolean blitTexture(GuiGraphics graphics, net.minecraft.resources.Identifier texture,
+			float x, float y, float width, float height, int color) {
+		if (width < 1.0F || height < 1.0F) {
+			return false;
+		}
+		int x0 = Math.round(x);
+		int y0 = Math.round(y);
+		int x1 = Math.round(x + width);
+		int y1 = Math.round(y + height);
+		try {
+			if (net.minecraft.client.Minecraft.getInstance().getResourceManager().getResource(texture).isEmpty()) {
+				return false;
+			}
+			graphics.blit(com.mojang.blaze3d.pipeline.RenderPipelines.GUI_TEXTURED, texture, x0, y0, 0.0F, 0.0F,
+					x1 - x0, y1 - y0, 128, 128, 128, 128, color);
+			return true;
+		} catch (Throwable throwable) {
+			return false;
+		}
+	}
+
+	/** Tint colour over an existing area - used for hover highlights that must not hide content. */
+	public static void wash(GuiGraphics graphics, float x, float y, float width, float height, float radius, int color, float amount) {
+		roundedRect(graphics, x, y, width, height, radius, scaleAlpha(color, amount));
+	}
+
+	// ------------------------------------------------------------ text helpers
+
+	/** Truncates with an ellipsis so it fits {@code maxWidth} device pixels. */
+	public static String ellipsize(net.minecraft.client.gui.Font font, String value, float maxWidth) {
+		if (value == null) {
+			return "";
+		}
+		if (font.width(value) <= maxWidth) {
+			return value;
+		}
+		String result = value;
+		while (result.length() > 4 && font.width(result + "…") > maxWidth) {
+			result = result.substring(0, result.length() - 2);
+		}
+		return result + "…";
+	}
+
+	/**
+	 * Heavier text without giving up the colour control: drawing the string twice with a half
+	 * pixel offset is exactly what the vanilla bold style does, but it keeps our own alpha.
+	 */
+	public static void boldText(GuiGraphics graphics, net.minecraft.client.gui.Font font, String value, float x, float y,
+			int color, boolean shadow) {
+		text(graphics, font, value, x, y, color, shadow);
+		text(graphics, font, value, x + 0.7F, y, color, shadow);
+	}
+
+	/** Horizontal gradient text, drawn in three-character runs to keep the draw count tiny. */
+	public static void gradientText(GuiGraphics graphics, net.minecraft.client.gui.Font font, String value,
+			float x, float y, int from, int to, boolean shadow) {
+		if (value == null || value.isEmpty()) {
+			return;
+		}
+		int length = value.length();
+		float cursor = x;
+		int run = 3;
+		for (int start = 0; start < length; start += run) {
+			String part = value.substring(start, Math.min(length, start + run));
+			int color = mix(from, to, start / (float) Math.max(1, length - 1));
+			text(graphics, font, part, cursor, y, color, shadow);
+			cursor += font.width(part);
 		}
 	}
 
@@ -3678,6 +4071,7 @@ import dev.chaosutils.config.ModuleManager;
 import dev.chaosutils.config.RadialElement;
 import dev.chaosutils.config.Setting;
 import dev.chaosutils.core.Keybinds;
+import dev.chaosutils.util.InputUtil;
 import dev.chaosutils.feature.Feature;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
@@ -3714,6 +4108,9 @@ public final class RadialMenuFeature implements Feature {
 	private static Setting.Toggle dimBackground;
 	private static Setting.Number dimStrength;
 	private static Setting.Toggle chatFeedback;
+	private static Setting.Toggle autoScale;
+	/** Previous physical key state, used for edge detection that also works inside a screen. */
+	private static boolean wasHeld;
 
 	private static RadialMenuScreen open;
 
@@ -3756,43 +4153,60 @@ public final class RadialMenuFeature implements Feature {
 				"Opacity of the dimming layer.", 0.35, 0.0, 0.8, 0.05));
 		chatFeedback = (Setting.Toggle) module.add(new Setting.Toggle("feedback", "Chat feedback",
 				"Confirm executed actions in your action bar.", true));
-	}
-
-	public static boolean isOpen() {
-		return open != null;
+		autoScale = (Setting.Toggle) module.add(new Setting.Toggle("auto_scale", "Fit to screen",
+				"Shrink the ring so it always fits on screen, even when it opens near an edge.", true));
 	}
 
 	@Override
 	public void onTick(Minecraft client) {
-		if (client.player == null) {
+		// Switching screens has to happen in the tick: doing it while a frame is being drawn would
+		// leave the game rendering a screen that is already gone.
+		if (open != null && open.readyToClose()) {
+			RadialMenuScreen screen = open;
+			open = null;
+			screen.finishClose();
 			return;
 		}
-		boolean pressed = Keybinds.radialMenu != null && Keybinds.radialMenu.isDown();
+		if (client.player == null) {
+			wasHeld = false;
+			if (open != null) {
+				open.cancel();
+			}
+			return;
+		}
 		if (!isEnabled()) {
 			if (open != null) {
 				open.cancel();
-				open = null;
+			}
+			return;
+		}
+		// The physical key is polled instead of KeyMapping#isDown: opening a screen makes the game
+		// release every key mapping (Minecraft#setScreen -> KeyMapping.releaseAll) and the keyboard
+		// handler stops feeding key bindings while a screen is open. Relying on the mapping state
+		// would close the menu again on the very next tick - before a single frame was drawn.
+		boolean held = InputUtil.isPhysicallyDown(Keybinds.radialMenu);
+		boolean justPressed = held && !wasHeld;
+		wasHeld = held;
+
+		if (open != null) {
+			if (holdMode.get() ? !held : justPressed) {
+				// The key was released: run the slice the player pointed at, then play the exit.
+				open.commitSelection();
 			}
 			return;
 		}
 		if (holdMode.get()) {
-			if (pressed && open == null) {
+			if (held && canOpen(client)) {
 				openMenu(client);
-			} else if (!pressed && open != null) {
-				// The key was released: run whatever slice the player pointed at.
-				RadialMenuScreen screen = open;
-				open = null;
-				screen.commitSelection();
 			}
-		} else if (pressed && Keybinds.radialMenu.consumeClick()) {
-			if (open == null) {
-				openMenu(client);
-			} else {
-				RadialMenuScreen screen = open;
-				open = null;
-				screen.commitSelection();
-			}
+		} else if (justPressed && canOpen(client)) {
+			openMenu(client);
 		}
+	}
+
+	/** The menu only opens in-game, or on top of another ChaosUtils window. */
+	private static boolean canOpen(Minecraft client) {
+		return client.screen == null || client.screen instanceof dev.chaosutils.gui.ChaosScreen;
 	}
 
 	private static void openMenu(Minecraft client) {
@@ -3802,9 +4216,19 @@ public final class RadialMenuFeature implements Feature {
 		client.setScreen(screen);
 	}
 
-	/** Called by the screen when it closes itself (Escape or a click outside). */
+	/** Accessor for the overlay gate: HUD elements hide while the menu is up. */
+	public static boolean isOpen() {
+		return open != null;
+	}
+
+	public static boolean scalesToScreen() {
+		return autoScale == null || autoScale.get();
+	}
+
+	/** Called by the screen once its exit animation finished. */
 	static void onClosed() {
 		open = null;
+		wasHeld = false;
 	}
 
 	public static List<RadialElement> entries() {
@@ -3930,6 +4354,7 @@ public final class RadialMenuFeature implements Feature {
 			open.cancel();
 			open = null;
 		}
+		wasHeld = false;
 	}
 }
 ```
@@ -3952,33 +4377,54 @@ import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
 
 /**
- * The radial menu itself.
+ * The interactive radial menu.
  *
- * <p>A transparent, non-pausing screen: the world keeps running behind it, the mouse is
- * released like in any other menu, and the ring is pinned where it appeared (on the cursor by
- * default, in the middle of the screen if the player prefers that) so the slices can be pointed
- * at. Releasing the radial key runs the slice under the pointer once - never twice, never
- * repeatedly.
+ * <p>Design rules that keep it readable:
+ * <ul>
+ *   <li>the ring is pinned where it opened (on the cursor by default) and is scaled down until it
+ *       fits the screen with a margin, so slices can never run off-screen,</li>
+ *   <li>slices are drawn as true annulus sectors with gaps, drawn scanline by scanline - no
+ *       overlapping blocks, no jagged edges,</li>
+ *   <li>labels are measured against the chord of their slice, so a long name can never reach into
+ *       the neighbouring slice,</li>
+ *   <li>nothing else is drawn while it is open: the HUD elements of ChaosUtils and the vanilla HUD
+ *       sit behind the frame's blur, and the dim layer removes the rest.</li>
+ * </ul>
  *
- * <p>Rendering is done with the shared {@code Render} helpers, so the menu looks identical to
- * the rest of the interface and needs no render pipeline knowledge.
+ * <p>Releasing the radial key runs the hovered slice exactly once. The screen closes itself with a
+ * short exit animation, so the player always sees which action was triggered.
  */
 public final class RadialMenuScreen extends Screen {
+	private static final float ENTRY_SCALE = 0.82F;
+	private static final float CLOSE_DELAY = 0.16F;
+
 	private final Screen parent;
-	private final Anim.Value openAnim = new Anim.Value(0.0F, 1.0F);
+	private final Anim.Value appear = new Anim.Value(0.0F, 12.0F);
+	private final Anim.Value exit = new Anim.Value(0.0F, 14.0F);
+
+	private Anim.Value[] sliceHover = new Anim.Value[0];
 	private int hoveredIndex = -1;
+	private boolean hoveredInitialised;
+
 	private float centerX;
 	private float centerY;
 	private boolean centerLocked;
-	private float lastMouseX;
-	private float lastMouseY;
+	private float mouseX;
+	private float mouseY;
+	private float scale = 1.0F;
+	private float inner;
+	private float outer;
+
 	private boolean closing;
-	private boolean executed;
+	private boolean committed;
+	private boolean handedOver;
+	private boolean closeFinished;
+	private float closingFor;
 
 	public RadialMenuScreen(Screen parent) {
 		super(Component.literal("ChaosUtils Radial Menu"));
 		this.parent = parent;
-		this.openAnim.snap(0.0F);
+		this.appear.snap(0.0F);
 	}
 
 	@Override
@@ -3991,43 +4437,46 @@ public final class RadialMenuScreen extends Screen {
 		return true;
 	}
 
-	/** Runs the currently hovered slice, then closes. Called when the key is released. */
+	/** Runs the hovered slice and closes with feedback. Called when the key is released. */
 	public void commitSelection() {
-		executed = true;
-		runHovered();
-		close();
+		if (closing) {
+			return;
+		}
+		RadialElement element = hovered();
+		if (element != null) {
+			Minecraft client = Minecraft.getInstance();
+			if (client.player != null) {
+				RadialMenuFeature.execute(element, client);
+			}
+			committed = true;
+		}
+		beginClose();
 	}
 
-	/** Closes without running anything (feature disabled, world change, ...). */
+	/** Closes without executing anything. */
 	public void cancel() {
-		if (closing) {
-			return;
+		if (!closing) {
+			beginClose();
 		}
+	}
+
+	private void beginClose() {
 		closing = true;
-		restoreParent();
+		exit.set(1.0F);
+		closingFor = 0.0F;
 	}
 
-	private void runHovered() {
-		List<RadialElement> entries = RadialMenuFeature.entries();
-		if (hoveredIndex < 0 || hoveredIndex >= entries.size()) {
-			return;
-		}
-		Minecraft client = Minecraft.getInstance();
-		if (client.player == null) {
-			return;
-		}
-		RadialMenuFeature.execute(entries.get(hoveredIndex), client);
+	/** True once the exit animation has played out; the feature then switches screens in its tick. */
+	public boolean readyToClose() {
+		return closeFinished;
 	}
 
-	private void close() {
-		if (closing) {
+	/** Performs the actual hand-over. Called from the client tick, never from inside a frame. */
+	public void finishClose() {
+		if (handedOver) {
 			return;
 		}
-		closing = true;
-		restoreParent();
-	}
-
-	private void restoreParent() {
+		handedOver = true;
 		RadialMenuFeature.onClosed();
 		Minecraft client = Minecraft.getInstance();
 		client.setScreen(parent);
@@ -4035,81 +4484,290 @@ public final class RadialMenuScreen extends Screen {
 
 	@Override
 	public void onClose() {
-		// Escape closes the menu without executing anything.
-		close();
+		cancel();
 	}
+
+	private RadialElement hovered() {
+		List<RadialElement> entries = RadialMenuFeature.entries();
+		return hoveredIndex >= 0 && hoveredIndex < entries.size() ? entries.get(hoveredIndex) : null;
+	}
+
+	// ------------------------------------------------------------------ render
 
 	@Override
 	public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-		float delta = dev.chaosutils.core.TickClock.frameDelta();
-		openAnim.set(1.0F);
-		openAnim.update(delta * Math.max(1.0F, RadialMenuFeature.animationSpeed() * 0.35F));
-		float appearance = Anim.easeOutCubic(Anim.clamp01(openAnim.get()));
+		float frameDelta = dev.chaosutils.core.TickClock.frameDelta();
+		if (frameDelta <= 0.0F) {
+			frameDelta = 0.016F;
+		}
 
-		List<RadialElement> entries = RadialMenuFeature.entries();
-		if (entries.isEmpty()) {
-			graphics.drawCenteredString(this.font, "No radial entries - add some in the radial editor", this.width / 2, this.height / 2, 0xFFE05B5B);
-			super.render(graphics, mouseX, mouseY, partialTick);
+		appear.set(1.0F);
+		appear.update(UiThemeSpeed(12.0F));
+		if (closing) {
+			exit.update(UiThemeSpeed(9.0F));
+			closingFor += frameDelta;
+			if (closingFor > CLOSE_DELAY) {
+				closeFinished = true;
+			}
+		}
+		if (closeFinished) {
+			// Nothing is drawn any more; the tick performs the screen switch.
 			return;
 		}
-		// The ring is pinned where it opened: centred on the cursor (default) or on the screen.
-		// Pinning is what makes hovering possible - a ring that followed the cursor could never
-		// be pointed at.
+
+		float appearance = Anim.easeOutQuint(Anim.clamp01(appear.get()));
+		float exitAmount = Anim.easeOutQuint(Anim.clamp01(exit.get()));
+		List<RadialElement> entries = RadialMenuFeature.entries();
+
 		if (!centerLocked) {
 			centerLocked = true;
 			centerX = RadialMenuFeature.centersOnCursor() ? mouseX : this.width * 0.5F;
 			centerY = RadialMenuFeature.centersOnCursor() ? mouseY : this.height * 0.5F;
 		}
-		lastMouseX = mouseX;
-		lastMouseY = mouseY;
+		this.mouseX = mouseX;
+		this.mouseY = mouseY;
 
-		if (RadialMenuFeature.dimsBackground()) {
+		computeGeometry(appearance);
+
+		// ---- dim layer: hides the world, the HUD and everything else behind the ring
+		float dim = RadialMenuFeature.dimsBackground() ? RadialMenuFeature.dimStrength() : 0.0F;
+		if (dim > 0.01F) {
 			Render.rect(graphics, 0.0F, 0.0F, this.width, this.height,
-					Render.alpha(0x000000, RadialMenuFeature.dimStrength() * appearance));
+					Render.alpha(0x05060A, dim * appearance));
+		}
+		// Extra vignette so the ring always sits on a calm background.
+		Render.verticalGradient(graphics, 0.0F, 0.0F, this.width, this.height, 0x33000000, 0x00000000);
+
+		if (entries.isEmpty()) {
+			drawEmptyState(graphics, appearance);
+			super.render(graphics, mouseX, mouseY, partialTick);
+			return;
 		}
 
-		float inner = RadialMenuFeature.innerRadius() * appearance;
-		float outer = RadialMenuFeature.outerRadius() * appearance;
-		float span = 360.0F / entries.size();
-		float gap = Math.min(RadialMenuFeature.gapDegrees(), span * 0.4F);
-		hoveredIndex = computeHovered(entries, centerX, centerY, inner, span);
-		// The hovered index is computed every frame from the last mouse position, so a key
-		// release between two frames still runs the slice the player saw highlighted.
+		ensureSlices(entries.size());
 
+		float span = 360.0F / entries.size();
+		float gap = Math.min(RadialMenuFeature.gapDegrees(), span * 0.35F);
+		hoveredIndex = closing ? -1 : computeHovered(entries, span);
+
+		// ---- slices
+		for (int i = 0; i < entries.size(); i++) {
+			Anim.Value hoverValue = sliceHover[i];
+			hoverValue.set(i == hoveredIndex ? 1.0F : 0.0F);
+			hoverValue.update(Anim.clamp(UiThemeSpeed(18.0F), 4.0F, 40.0F));
+			float highlight = hoverValue.get();
+
+			RadialElement element = entries.get(i);
+			float start = i * span - span * 0.5F + gap * 0.5F;
+			float end = (i + 1) * span - span * 0.5F - gap * 0.5F;
+			float expansion = highlight * (RadialMenuFeature.hoverScale() - 1.0F) * outer * 1.6F;
+			float rInner = inner;
+			float rOuter = outer + expansion;
+
+			int base = element.color | 0xFF000000;
+			float baseAlpha = 0.70F;
+			int color = Render.alpha(Render.mix(base, RadialMenuFeature.highlightColor(), highlight * 0.45F),
+					(baseAlpha + 0.25F * highlight) * appearance * (1.0F - exitAmount));
+			if (highlight > 0.05F) {
+				Render.glow(graphics, sliceAnchorX(start, end, rOuter), sliceAnchorY(start, end, rOuter),
+						(Math.abs(end - start) / 360.0F) * outer * 2.6F + 24.0F, base, 0.30F * highlight * appearance);
+			}
+			Render.arc(graphics, centerX, centerY, rInner, rOuter, start, end, color);
+			// inner shading for a subtle depth gradient (darker towards the centre)
+			Render.arc(graphics, centerX, centerY, rInner, rInner + (rOuter - rInner) * 0.45F, start, end,
+					Render.alpha(0x000000, 0.20F * appearance * (1.0F - exitAmount)));
+			if (highlight > 0.02F) {
+				Render.arc(graphics, centerX, centerY, rOuter - 2.0F, rOuter, start, end,
+						Render.alpha(0xFFFFFFFF, 0.75F * highlight * appearance * (1.0F - exitAmount)));
+			}
+		}
+
+		// ---- slice content (drawn after every slice so nothing can cover a label)
 		for (int i = 0; i < entries.size(); i++) {
 			RadialElement element = entries.get(i);
-			boolean hovered = i == hoveredIndex;
-			float start = i * span - 90.0F + gap * 0.5F;
-			float end = (i + 1) * span - 90.0F - gap * 0.5F;
-			float expansion = hovered ? (RadialMenuFeature.hoverScale() - 1.0F) * outer : 0.0F;
-			int base = element.color;
-			int color = hovered
-					? Render.alpha(Render.mix(base, RadialMenuFeature.highlightColor(), 0.55F), Anim.clamp01(0.92F * appearance))
-					: Render.alpha(base, Anim.clamp01(0.62F * appearance));
-			Render.arc(graphics, centerX, centerY, inner, outer + expansion, start, end, color);
-			if (hovered) {
-				Render.arc(graphics, centerX, centerY, outer + expansion - 1.5F, outer + expansion,
-						start, end, Render.alpha(0xFFFFFFFF, Anim.clamp01(0.85F * appearance)));
-			}
-			drawSliceContent(graphics, element, centerX, centerY, inner, outer, expansion, start, end, hovered, appearance);
+			float start = i * span - span * 0.5F + gap * 0.5F;
+			float end = (i + 1) * span - span * 0.5F - gap * 0.5F;
+			float highlight = sliceHover[i].get();
+			float expansion = highlight * (RadialMenuFeature.hoverScale() - 1.0F) * outer * 1.6F;
+			drawSliceContent(graphics, element, start, end, expansion, highlight, appearance, exitAmount, span);
 		}
 
-		// Centre text: what is currently selected.
-		if (RadialMenuFeature.showCenterText()) {
-			String label = hoveredIndex >= 0 ? entries.get(hoveredIndex).name : "Select an action";
-			String detail = hoveredIndex >= 0 ? entries.get(hoveredIndex).command : "release to cancel";
-			Render.centeredText(graphics, this.font, label, centerX, centerY - 12.0F,
-					Render.alpha(0xFFFFFFFF, Anim.clamp01(appearance)), true);
-			Render.centeredText(graphics, this.font, trim(detail), centerX, centerY - 2.0F,
-					Render.alpha(0xFFBFC2CF, Anim.clamp01(appearance)), true);
-			Render.centeredText(graphics, this.font, entries.get(Math.max(0, hoveredIndex)).type.label(), centerX, centerY + 9.0F,
-					Render.alpha(0xFF8A8A9E, Anim.clamp01(appearance)), true);
-		}
-
-		String hint = "hold " + keyHint() + "  ·  release to run  ·  esc to cancel";
-		Render.centeredText(graphics, this.font, hint, this.width * 0.5F, this.height - 26.0F, 0xFF9E9EB3, true);
-
+		drawHub(graphics, entries, appearance, exitAmount);
+		drawSelectionLabel(graphics, appearance, exitAmount);
+		drawHint(graphics, appearance);
 		super.render(graphics, mouseX, mouseY, partialTick);
+	}
+
+	/** Theme animation speed times the speed the player configured for the radial menu. */
+	private float UiThemeSpeed(float base) {
+		return dev.chaosutils.gui.UiTheme.get().speed(base) * RadialMenuFeature.animationSpeed();
+	}
+
+	private void ensureSlices(int count) {
+		if (sliceHover.length == count) {
+			return;
+		}
+		Anim.Value[] replacements = new Anim.Value[count];
+		for (int i = 0; i < count; i++) {
+			replacements[i] = i < sliceHover.length ? sliceHover[i] : new Anim.Value(0.0F, 18.0F);
+		}
+		sliceHover = replacements;
+	}
+
+	/** Fits the ring to the screen and keeps the centre inside the safe area. */
+	private void computeGeometry(float appearance) {
+		float wantedInner = Math.max(24.0F, RadialMenuFeature.innerRadius());
+		float wantedOuter = Math.max(wantedInner + 20.0F, RadialMenuFeature.outerRadius());
+		float margin = RadialMenuFeature.scalesToScreen() ? 28.0F : 0.0F;
+		float available = Math.min(Math.min(centerX, this.width - centerX), Math.min(centerY, this.height - centerY)) - margin;
+		scale = RadialMenuFeature.scalesToScreen() ? Anim.clamp(available / wantedOuter, 0.5F, 1.0F) : 1.0F;
+		float grown = ENTRY_SCALE + (1.0F - ENTRY_SCALE) * appearance;
+		outer = wantedOuter * scale * grown;
+		inner = wantedInner * scale * grown;
+		centerX = Anim.clamp(centerX, margin + outer, this.width - margin - outer);
+		centerY = Anim.clamp(centerY, margin + outer, this.height - margin - outer);
+	}
+
+	private int computeHovered(List<RadialElement> entries, float span) {
+		float dx = mouseX - centerX;
+		float dy = mouseY - centerY;
+		double distance = Math.sqrt(dx * dx + dy * dy);
+		float deadZone = Math.max(RadialMenuFeature.deadZone(), inner * 0.55F);
+		if (distance < deadZone || distance > outer + 26.0F) {
+			return -1;
+		}
+		double angle = Math.toDegrees(Math.atan2(dx, -dy)) + span * 0.5;
+		while (angle < 0.0) {
+			angle += 360.0;
+		}
+		while (angle >= 360.0) {
+			angle -= 360.0;
+		}
+		return Anim.clamp((int) (angle / span), 0, entries.size() - 1);
+	}
+
+	private float sliceAnchorX(float start, float end, float radius) {
+		double mid = Math.toRadians((start + end) * 0.5);
+		return centerX + (float) Math.sin(mid) * radius;
+	}
+
+	private float sliceAnchorY(float start, float end, float radius) {
+		double mid = Math.toRadians((start + end) * 0.5);
+		return centerY - (float) Math.cos(mid) * radius;
+	}
+
+	private void drawSliceContent(GuiGraphics graphics, RadialElement element, float start, float end,
+			float expansion, float highlight, float appearance, float exitAmount, float span) {
+		float alpha = appearance * (1.0F - exitAmount) * (0.82F + 0.18F * highlight);
+		if (alpha <= 0.02F) {
+			return;
+		}
+		double midDegrees = (start + end) * 0.5;
+		double mid = Math.toRadians(midDegrees);
+		float midRadius = (inner + outer + expansion) * 0.5F;
+		float x = centerX + (float) Math.sin(mid) * midRadius;
+		float y = centerY - (float) Math.cos(mid) * midRadius;
+
+		// Chord of the slice at the label radius: the hard limit for text and icon width.
+		float chord = 2.0F * midRadius * (float) Math.sin(Math.toRadians(Math.abs(span) * 0.5F));
+		float available = Math.max(28.0F, chord - 12.0F);
+		net.minecraft.world.item.ItemStack icon = element.iconStack();
+		boolean hasIcon = RadialMenuFeature.showIcons() && icon != null && !icon.isEmpty();
+
+		if (hasIcon) {
+			float iconY = y - (RadialMenuFeature.showLabels() ? 8.0F : 0.0F);
+			UiIcon(graphics, icon, x, iconY, 0.82F + 0.22F * highlight);
+		}
+		if (!RadialMenuFeature.showLabels()) {
+			return;
+		}
+		Font font = this.font;
+		String name = Render.ellipsize(font, element.name, available);
+		boolean tooTight = chord < 42.0F && highlight < 0.4F;
+		if (tooTight) {
+			return;
+		}
+		float textY = hasIcon ? y + 3.0F : y - 4.0F;
+		int color = Render.alpha(highlight > 0.5F ? 0xFFFFFFFF : 0xF0FFFFFF, alpha);
+		Render.centeredText(graphics, font, name, x, textY, color, false);
+	}
+
+	private void UiIcon(GuiGraphics graphics, net.minecraft.world.item.ItemStack icon, float x, float y, float size) {
+		graphics.pose().pushMatrix();
+		graphics.pose().translate(x, y);
+		graphics.pose().scale(size, size);
+		graphics.pose().translate(-x, -y);
+		Render.item(graphics, icon, x - 8.0F, y - 8.0F);
+		graphics.pose().popMatrix();
+	}
+
+	/** Centre hub: shows the hovered icon, or a compass rose when nothing is selected. */
+	private void drawHub(GuiGraphics graphics, List<RadialElement> entries, float appearance, float exitAmount) {
+		float alpha = appearance * (1.0F - exitAmount);
+		float hubRadius = Math.max(14.0F, inner - 6.0F);
+		Render.circle(graphics, centerX, centerY, hubRadius, Render.alpha(0x0C0D14, 0.72F * alpha));
+		RadialElement element = hovered();
+		boolean hasHover = element != null;
+		if (hasHover) {
+			Render.glow(graphics, centerX, centerY, hubRadius * 2.1F, element.color | 0xFF000000, 0.35F * alpha);
+		}
+		Render.ring(graphics, centerX - hubRadius, centerY - hubRadius, hubRadius * 2.0F, hubRadius * 2.0F, hubRadius, 1.4F,
+				Render.alpha(hasHover ? 0xFFFFFFFF : 0x66FFFFFF, 0.35F * alpha));
+		if (hasHover && RadialMenuFeature.showIcons()) {
+			UiIcon(graphics, element.iconStack(), centerX, centerY, 1.55F);
+		} else if (RadialMenuFeature.showCenterText()) {
+			// small compass rose while nothing is hovered
+			int color = Render.alpha(0xFFFFFFFF, 0.45F * alpha);
+			Render.line(graphics, centerX, centerY - hubRadius * 0.55F, centerX, centerY + hubRadius * 0.55F, 1.6F, color);
+			Render.line(graphics, centerX - hubRadius * 0.55F, centerY, centerX + hubRadius * 0.55F, centerY, 1.6F, color);
+			Render.circle(graphics, centerX, centerY, 2.0F, color);
+		}
+	}
+
+	/** Name and command of the hovered slice, in a pill below the ring. */
+	private void drawSelectionLabel(GuiGraphics graphics, float appearance, float exitAmount) {
+		float alpha = appearance * (1.0F - exitAmount);
+		RadialElement element = hovered();
+		float y = centerY + outer + 18.0F;
+		if (element == null) {
+			String hint = "point at a slice";
+			Render.centeredText(graphics, this.font, hint, centerX, y,
+					Render.alpha(0xFFFFFFFF, 0.45F * alpha), false);
+			return;
+		}
+		String name = element.name;
+		String detail = element.command == null || element.command.isEmpty() ? element.type.label() : element.command;
+		Font font = this.font;
+		float width = Math.max(font.width(name), font.width(detail)) + 26.0F;
+		float top = y - 6.0F;
+		Render.softShadow(graphics, centerX - width * 0.5F, top, width, 28.0F, 9.0F, 0.7F * alpha);
+		Render.roundedRect(graphics, centerX - width * 0.5F, top, width, 28.0F, 9.0F,
+				Render.alpha(0x12131C, 0.92F * alpha));
+		Render.ring(graphics, centerX - width * 0.5F, top, width, 28.0F, 9.0F, 1.0F,
+				Render.alpha(element.color | 0xFF000000, 0.55F * alpha));
+		Render.centeredText(graphics, font, Render.ellipsize(font, name, width - 20.0F), centerX, top + 5.0F,
+				Render.alpha(0xFFFFFFFF, alpha), false);
+		Render.centeredText(graphics, font, Render.ellipsize(font, detail, width - 20.0F), centerX, top + 15.0F,
+				Render.alpha(0xFFB9BBD0, alpha * 0.9F), false);
+	}
+
+	private void drawHint(GuiGraphics graphics, float appearance) {
+		String hint = "hold " + keyHint() + "  ·  release to run  ·  esc or right click to cancel";
+		Render.centeredText(graphics, this.font, hint, this.width * 0.5F, this.height - 22.0F,
+				Render.alpha(0xFFD8DAE6, 0.55F * appearance), false);
+	}
+
+	private void drawEmptyState(GuiGraphics graphics, float appearance) {
+		float width = 240.0F;
+		float x = (this.width - width) * 0.5F;
+		float y = this.height * 0.5F - 26.0F;
+		Render.softShadow(graphics, x, y, width, 52.0F, 10.0F, 0.8F);
+		Render.roundedRect(graphics, x, y, width, 52.0F, 10.0F, Render.alpha(0x12131C, 0.95F * appearance));
+		Render.ring(graphics, x, y, width, 52.0F, 10.0F, 1.0F, Render.alpha(0x33FFFFFF, appearance));
+		Render.centeredText(graphics, this.font, "No radial entries", this.width * 0.5F, y + 12.0F,
+				Render.alpha(0xFFFFFFFF, appearance), false);
+		Render.centeredText(graphics, this.font, "Add some in the radial editor", this.width * 0.5F, y + 26.0F,
+				Render.alpha(0xFFB9BBD0, appearance), false);
 	}
 
 	private String keyHint() {
@@ -4120,59 +4778,7 @@ public final class RadialMenuScreen extends Screen {
 		}
 	}
 
-	private int computeHovered(List<RadialElement> entries, float centerX, float centerY, float inner, float span) {
-		float dx = lastMouseX - centerX;
-		float dy = lastMouseY - centerY;
-		double distance = Math.sqrt(dx * dx + dy * dy);
-		if (distance < Math.max(RadialMenuFeature.deadZone(), inner * 0.6F)) {
-			return -1;
-		}
-		double angle = Math.toDegrees(Math.atan2(dx, -dy)) + 90.0;
-		while (angle < 0.0) {
-			angle += 360.0;
-		}
-		while (angle >= 360.0) {
-			angle -= 360.0;
-		}
-		int index = (int) (angle / span);
-		return Math.max(0, Math.min(entries.size() - 1, index));
-	}
-
-	private void drawSliceContent(GuiGraphics graphics, RadialElement element, float centerX, float centerY,
-			float inner, float outer, float expansion, float start, float end, boolean hovered, float appearance) {
-		// Content sits on the middle line of the slice: icon above, label below it (or the label
-		// alone, vertically centred, when there is no icon).
-		double midAngle = Math.toRadians((start + end) * 0.5);
-		float midRadius = (inner + outer + expansion) * 0.5F;
-		float x = centerX + (float) Math.sin(midAngle) * midRadius;
-		float y = centerY - (float) Math.cos(midAngle) * midRadius;
-		boolean hasIcon = RadialMenuFeature.showIcons() && !element.iconStack().isEmpty();
-		if (hasIcon) {
-			float scale = 0.8F + 0.2F * appearance + (hovered ? 0.15F : 0.0F);
-			graphics.pose().pushMatrix();
-			graphics.pose().translate(x, y);
-			graphics.pose().scale(scale, scale);
-			graphics.pose().translate(-x, -y);
-			Render.item(graphics, element.iconStack(), x - 8.0F, y - 14.0F);
-			graphics.pose().popMatrix();
-		}
-		if (RadialMenuFeature.showLabels()) {
-			Font font = this.font;
-			String name = trim(element.name);
-			float labelX = x - font.width(name) * 0.5F;
-			float labelY = hasIcon ? y + 3.0F : y - 4.0F;
-			int color = hovered ? 0xFFFFFFFF : Render.alpha(0xFFFFFFFF, Anim.clamp01(appearance));
-			Render.text(graphics, font, name, labelX, labelY, color, true);
-		}
-	}
-
-	private String trim(String value) {
-		String result = value == null ? "" : value;
-		while (this.font.width(result) > 96 && result.length() > 4) {
-			result = result.substring(0, result.length() - 2) + "…";
-		}
-		return result;
-	}
+	// ------------------------------------------------------------------- input
 
 	@Override
 	public boolean mouseClicked(MouseButtonEvent event, boolean doubled) {
@@ -4181,14 +4787,14 @@ public final class RadialMenuScreen extends Screen {
 			return true;
 		}
 		if (event.button() == 1) {
-			close();
+			cancel();
 			return true;
 		}
 		return super.mouseClicked(event, doubled);
 	}
 
 	public boolean wasExecuted() {
-		return executed;
+		return committed;
 	}
 }
 ```
@@ -4307,421 +4913,613 @@ import dev.chaosutils.util.Anim;
 import dev.chaosutils.util.Render;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 
 /**
- * The main ChaosUtils interface.
+ * The ChaosUtils interface.
  *
- * <p>Sidebar with categories on the left, searchable animated module cards on the right.
- * Every setting of every feature is rendered generically from its {@link Setting}
- * description, so nothing can be missing from the GUI.
+ * <p>A floating window (drag the top bar, resize from the corner, double-click the bar to re-centre)
+ * with a sidebar of categories on the left and a searchable list of module cards on the right.
+ * Every setting of every feature is rendered generically from its {@link Setting} description, so
+ * a newly added feature shows up in the interface without touching this class.
  */
 public final class ChaosClickGui extends ChaosScreen {
+	private static final float SIDEBAR_MIN = 138.0F;
+	private static final float CARD_GAP = 6.0F;
+
 	private final Map<String, Boolean> expanded = new HashMap<>();
+	private final List<ModuleCard> cards = new ArrayList<>();
 	private Category selected = Category.HUD;
 	private String query = "";
-	private EditBox search;
+	private float selectedPulse;
+
+	private UiWidgets.ScrollList list;
+	private UiWidgets.SearchField search;
+	private UiWidgets.Label headerTitle;
+	private UiWidgets.Label headerSubtitle;
+	private float sidebarWidth;
 
 	public ChaosClickGui() {
-		super(Component.literal("ChaosUtils"));
+		this(null);
 	}
+
+	public ChaosClickGui(Screen parent) {
+		super(parent, Component.literal("ChaosUtils"), "window.main", 680.0F, 440.0F);
+	}
+
+	// ------------------------------------------------------------------ layout
 
 	@Override
 	protected void buildLayout() {
-		UiTheme theme = theme();
-		float sidebarWidth = theme.sidebarWidth;
-		float topBar = 34.0F;
-		float contentX = 12.0F + sidebarWidth + 8.0F;
-		float contentWidth = this.width - contentX - 12.0F;
+		UiTheme theme = UiTheme.get();
+		float winX = window.x();
+		float winY = window.y();
+		float sidebarTop = winY + window.titleHeight() + 10.0F;
+		float sidebarHeight = window.height() - window.titleHeight() - 20.0F;
+		this.sidebarWidth = Math.max(SIDEBAR_MIN, theme.sidebarWidth + 44.0F);
 
-		// --- sidebar
-		float y = topBar + 8.0F;
-		List<Category> categories = List.of(Category.values());
-		for (Category category : categories) {
-			SidebarEntry entry = new SidebarEntry(this, category);
-			entry.setBounds(12.0F, y, sidebarWidth, 24.0F);
-			add(entry);
-			y += 26.0F;
+		float contentX = winX + sidebarWidth + 24.0F;
+		float contentWidth = Math.max(220.0F, window.right() - 14.0F - contentX);
+
+		SidebarPanel panel = new SidebarPanel();
+		panel.setBounds(winX + 8.0F, sidebarTop - 4.0F, sidebarWidth - 4.0F, sidebarHeight + 4.0F);
+		add(panel);
+
+		// --- sidebar: categories
+		float cursor = sidebarTop + 22.0F;
+		for (Category category : Category.values()) {
+			SidebarItem item = new SidebarItem(this, category);
+			item.setBounds(winX + 14.0F, cursor, sidebarWidth - 12.0F, 26.0F);
+			item.setAppearDelay(0.02F * category.ordinal());
+			add(item);
+			cursor += 28.0F;
 		}
 
-		// --- buttons
-		float buttonWidth = (sidebarWidth - 6.0F) * 0.5F;
-		UiWidgets.Button hudEditor = new UiWidgets.Button(this, "HUD Editor", theme.accent, this::openHudEditor);
-		hudEditor.setBounds(12.0F, this.height - 54.0F, buttonWidth, 18.0F);
-		hudEditor.setTooltip("Move every overlay with the mouse.");
-		add(hudEditor);
+		// --- sidebar: quick actions
+		float actionsBottom = winY + window.height() - 12.0F;
+		UiWidgets.Label general = new UiWidgets.Label("General", UiTheme.get().textFaint);
+		general.setBounds(winX + 22.0F, actionsBottom - 76.0F, sidebarWidth - 20.0F, 10.0F);
+		add(general);
+		float half = (sidebarWidth - 18.0F) * 0.5F;
+		add(smallButton("HUD Editor", winX + 14.0F, actionsBottom - 62.0F, half,
+				() -> openHudEditor(), "Move every overlay with the mouse."));
+		add(smallButton("Radial", winX + 14.0F + half + 6.0F, actionsBottom - 62.0F, half,
+				() -> open(new ChaosScreens.RadialEditorScreen(this)), "Create, edit and reorder the radial menu."));
+		add(smallButton("Waypoints", winX + 14.0F, actionsBottom - 40.0F, half,
+				() -> open(new ChaosScreens.WaypointsScreen(this)), "Death markers and manual waypoints."));
+		add(smallButton("Chat", winX + 14.0F + half + 6.0F, actionsBottom - 40.0F, half,
+				() -> open(new ChaosScreens.ChatHistoryScreen(this)), "Search and copy everything you saw in chat."));
+		add(smallButton("Screenshots", winX + 14.0F, actionsBottom - 18.0F, half,
+				() -> open(new ChaosScreens.ScreenshotScreen(this)), "Browse, copy and crop local screenshots."));
 
-		UiWidgets.Button radialEditor = new UiWidgets.Button(this, "Radial", theme.accent, () -> {
-			if (this.minecraft != null) {
-				this.minecraft.setScreen(new ChaosScreens.RadialEditorScreen(this));
-			}
-		});
-		radialEditor.setBounds(12.0F + buttonWidth + 6.0F, this.height - 54.0F, buttonWidth, 18.0F);
-		radialEditor.setTooltip("Create, edit and delete radial menu entries.");
-		add(radialEditor);
-
-		UiWidgets.Button waypoints = new UiWidgets.Button(this, "Waypoints", theme.accent, () -> {
-			if (this.minecraft != null) {
-				this.minecraft.setScreen(new ChaosScreens.WaypointsScreen(this));
-			}
-		});
-		waypoints.setBounds(12.0F, this.height - 76.0F, buttonWidth, 18.0F);
-		waypoints.setTooltip("Death markers and manual waypoints.");
-		add(waypoints);
-
-		UiWidgets.Button chatHistory = new UiWidgets.Button(this, "Chat", theme.accent, () -> {
-			if (this.minecraft != null) {
-				this.minecraft.setScreen(new ChaosScreens.ChatHistoryScreen(this));
-			}
-		});
-		chatHistory.setBounds(12.0F + buttonWidth + 6.0F, this.height - 76.0F, buttonWidth, 18.0F);
-		chatHistory.setTooltip("Search and copy everything you saw in chat.");
-		add(chatHistory);
-
-		UiWidgets.Button panic = new UiWidgets.Button(this, "Hide overlays", 0xFFE05B5B, () -> ChaosUtils.toggleOverlays());
-		panic.setBounds(12.0F, this.height - 32.0F, sidebarWidth, 18.0F);
-		panic.setTooltip("Panic key: hides every ChaosUtils overlay instantly.");
+		UiWidgets.Button panic = new UiWidgets.Button(
+				ChaosUtils.overlaysHidden() ? "Show overlays" : "Hide overlays",
+				UiWidgets.Button.Variant.DANGER, theme.negative, () -> {
+					ChaosUtils.toggleOverlays();
+					toast(ChaosUtils.overlaysHidden() ? "Overlays hidden" : "Overlays visible");
+					refresh();
+				});
+		panic.setBounds(winX + 14.0F + half + 6.0F, actionsBottom - 18.0F, half, 18.0F);
+		panic.setTooltip("Panic switch: hides every ChaosUtils overlay instantly.");
 		add(panic);
 
-		// --- search field
-		search = new EditBox(this.font, Math.round(contentX), Math.round(8.0F), Math.round(Math.min(220.0F, contentWidth)), 18, Component.literal("Search"));
-		search.setBordered(false);
-		search.setTextColor(0xFFF2F2F7);
-		search.setHint(Component.literal("Search features…"));
-		search.setResponder(value -> {
-			this.query = value;
-			refreshCards();
-		});
-		addInput(search);
+		// --- content header
+		headerTitle = new UiWidgets.Label(titleText(), theme.text).bold();
+		headerTitle.setBounds(contentX, winY + window.titleHeight() + 12.0F, contentWidth * 0.5F, 14.0F);
+		add(headerTitle);
 
-		// --- module cards
-		ScrollPanel panel = new ScrollPanel();
-		panel.setBounds(contentX, topBar + 4.0F, contentWidth, this.height - topBar - 16.0F);
-		add(panel);
-		rebuildCards(panel);
-	}
+		headerSubtitle = new UiWidgets.Label(subtitleText(), theme.textFaint);
+		headerSubtitle.setBounds(contentX, winY + window.titleHeight() + 27.0F, contentWidth * 0.5F, 12.0F);
+		add(headerSubtitle);
 
-	private ScrollPanel panel() {
-		for (UiComponent component : components) {
-			if (component instanceof ScrollPanel scrollPanel) {
-				return scrollPanel;
+		// --- search (vanilla text field, styled field around it)
+		EditBox searchBox = new EditBox(this.font, 0, 0, 180, 14, Component.literal("Search"));
+		searchBox.setBordered(false);
+		searchBox.setTextColor(0xFFF4F5FA);
+		searchBox.setHint(Component.literal("Search modules…"));
+		searchBox.setMaxLength(48);
+		searchBox.setValue(query);
+		searchBox.setResponder(value -> {
+			if (!value.equals(query)) {
+				query = value;
+				rebuildCards();
 			}
-		}
-		return null;
+		});
+		addInput(searchBox);
+		search = new UiWidgets.SearchField(searchBox);
+		search.setOnClear(() -> {
+			query = "";
+			rebuildCards();
+		});
+		search.place(contentX + contentWidth - 200.0F, winY + window.titleHeight() + 14.0F, 200.0F, 22.0F);
+		add(search);
+
+		UiWidgets.IconButton collapse = new UiWidgets.IconButton(
+				(graphics, cx, cy, alpha) -> {
+					// Double chevron pointing up: "collapse everything".
+					for (int i = 0; i < 2; i++) {
+						float offset = (i - 0.5F) * 4.0F;
+						Ui.chevron(graphics, cx, cy + offset, 6.0F, -90.0F, Render.alpha(theme.textDim, alpha));
+					}
+				}, theme.accent, this::collapseAll);
+		collapse.setTooltip("Collapse every expanded module.");
+		collapse.setBounds(contentX + contentWidth - 26.0F, winY + window.titleHeight() + 14.0F, 22.0F, 22.0F);
+		collapse.setAppearDelay(0.05F);
+		add(collapse);
+
+		// --- module list
+		list = new UiWidgets.ScrollList();
+		list.setSpacing(CARD_GAP);
+		list.setBounds(contentX, winY + window.titleHeight() + 44.0F, contentWidth,
+				Math.max(80.0F, window.height() - window.titleHeight() - 56.0F));
+		list.snapAppear();
+		add(list);
+		rebuildCards();
 	}
 
-	private void refreshCards() {
-		ScrollPanel panel = panel();
-		if (panel != null) {
-			rebuildCards(panel);
+	private UiWidgets.Button smallButton(String label, float x, float y, float width, Runnable action, String tooltip) {
+		UiWidgets.Button button = new UiWidgets.Button(label, UiWidgets.Button.Variant.GHOST, UiTheme.get().accent, action);
+		button.setBounds(x, y, width, 18.0F);
+		button.setTooltip(tooltip);
+		button.setPadding(2.0F);
+		return button;
+	}
+
+	private void open(Screen screen) {
+		if (this.minecraft != null) {
+			this.minecraft.setScreen(screen);
 		}
 	}
 
-	private void rebuildCards(ScrollPanel panel) {
-		panel.reset();
-		panel.clearChildren();
+	private String titleText() {
+		if (!query.isBlank()) {
+			return "Search";
+		}
+		return selected.displayName();
+	}
+
+	private String subtitleText() {
+		if (!query.isBlank()) {
+			int matches = ModuleManager.search(query).size();
+			return matches + (matches == 1 ? " match" : " matches") + " for \"" + query + "\"";
+		}
+		int total = ModuleManager.byCategory(selected).size();
+		long enabled = ModuleManager.byCategory(selected).stream().filter(Module::isEnabled).count();
+		return total + (total == 1 ? " module" : " modules") + "   ·   " + enabled + " enabled";
+	}
+
+	private void collapseAll() {
+		expanded.replaceAll((key, value) -> Boolean.FALSE);
+		rebuildCards();
+		toast("All modules collapsed");
+	}
+
+	@Override
+	protected void renderHeader(GuiGraphics graphics, float alpha) {
 		UiTheme theme = theme();
-		float cardHeight = theme.compact ? 24.0F : 28.0F;
-		float gap = 6.0F;
-		float y = 0.0F;
-		List<Module> modules = new ArrayList<>();
-		if (query != null && !query.isBlank()) {
-			modules.addAll(ModuleManager.search(query));
-		} else {
-			modules.addAll(ModuleManager.byCategory(selected));
+		Render.gradientText(graphics, this.font, "ChaosUtils", window.x() + 16.0F, window.y() + 13.0F,
+				theme.text, theme.accent, false);
+		String version = modVersion();
+		Render.text(graphics, this.font, version, window.x() + 20.0F + this.font.width("ChaosUtils"),
+				window.y() + 14.0F, Render.alpha(theme.textFaint, alpha * 0.9F), false);
+		// Window controls: re-centre and close.
+		String hint = "drag to move  ·  double-click to re-centre";
+		Render.text(graphics, this.font, hint, window.right() - 46.0F - this.font.width(hint), window.y() + 14.0F,
+				Render.alpha(theme.textFaint, alpha * 0.7F), false);
+	}
+
+	private static String modVersion() {
+		try {
+			return net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer(ChaosUtils.MOD_ID)
+					.map(container -> "beta " + container.getMetadata().getVersion().getFriendlyString())
+					.orElse("beta");
+		} catch (Throwable ignored) {
+			return "beta";
 		}
+	}
+
+	/** Status line under the module list. */
+	@Override
+	protected void renderFooter(GuiGraphics graphics, float alpha) {
+		if (list == null) {
+			return;
+		}
+		UiTheme theme = theme();
+		float y = window.bottom() - 14.0F;
+		String status = cards.size() + (cards.size() == 1 ? " module" : " modules") + " shown   ·   "
+				+ ModuleManager.countEnabled() + "/" + ModuleManager.modules().size() + " active"
+				+ (ChaosUtils.overlaysHidden() ? "   ·   overlays hidden" : "");
+		Render.text(graphics, this.font, status, window.x() + sidebarWidth + 24.0F, y,
+				Render.alpha(theme.textFaint, alpha * 0.85F), false);
+	}
+
+	// ------------------------------------------------------------------- cards
+
+	private void rebuildCards() {
+		if (list == null) {
+			return;
+		}
+		list.clearItems();
+		cards.clear();
+		List<Module> modules = query.isBlank() ? ModuleManager.byCategory(selected) : ModuleManager.search(query);
+		float width = list.width();
+		int index = 0;
 		for (Module module : modules) {
-			ModuleCard card = new ModuleCard(this, module);
-			card.setBounds(0.0F, y, panel.width(), cardHeight);
-			panel.addCard(card, y);
-			y += cardHeight + gap + card.extraHeight();
+			ModuleCard card = new ModuleCard(this, module, query.isBlank() ? null : module.category().displayName());
+			card.setBounds(0.0F, 0.0F, width, card.headerHeight());
+			card.setAppearDelay(Math.min(0.22F, 0.014F * index));
+			cards.add(card);
+			list.addItem(card);
+			index++;
 		}
-		panel.setContentHeight(y);
-	}
-
-	@Override
-	protected void renderBackdrop(GuiGraphics graphics, int mouseX, int mouseY, float deltaTicks) {
-		super.renderBackdrop(graphics, mouseX, mouseY, deltaTicks);
-		UiTheme theme = theme();
-		float sidebarWidth = theme.sidebarWidth;
-		// Sidebar / content separation with a soft accent glow.
-		Render.shadowedPanel(graphics, 12.0F, 34.0F, sidebarWidth, this.height - 34.0F - 62.0F, theme.radius, theme.panel, 0x00000000);
-		Render.verticalGradient(graphics, 12.0F, 34.0F, sidebarWidth, this.height - 34.0F - 62.0F,
-				Render.alpha(theme.accent, 0.10F), 0x00000000);
-
-		float contentX = 12.0F + sidebarWidth + 8.0F;
-		Render.shadowedPanel(graphics, contentX - 4.0F, 30.0F, this.width - contentX - 4.0F, this.height - 46.0F, theme.radius, theme.panelAlt, 0x00000000);
-
-		// Header
-		Render.text(graphics, font(), "ChaosUtils", 14.0F, 12.0F, theme.text, false);
-		String subtitle = selected.displayName() + "  ·  " + ModuleManager.countEnabled() + "/" + ModuleManager.modules().size() + " active"
-				+ (ChaosUtils.overlaysHidden() ? "  ·  OVERLAYS HIDDEN" : "");
-		Render.text(graphics, font(), subtitle, 14.0F, 22.0F, theme.textFaint, false);
-	}
-
-	@Override
-	public void render(GuiGraphics graphics, int mouseX, int mouseY, float deltaTicks) {
-		super.render(graphics, mouseX, mouseY, deltaTicks);
-		if (search != null && search.getValue().isEmpty() && !search.isFocused()) {
-			Render.text(graphics, font(), "Search features…", search.getX() + 2.0F, search.getY() + 5.0F, theme().textFaint, false);
+		list.layout();
+		if (headerTitle != null) {
+			headerTitle.setText(titleText());
+		}
+		if (headerSubtitle != null) {
+			headerSubtitle.setText(subtitleText());
 		}
 	}
 
-	// ------------------------------------------------------------------ widgets
+	@Override
+	protected void modalClosed(UiModals.Modal modal) {
+		refresh();
+	}
 
-	private static final class SidebarEntry extends UiComponent {
+	@Override
+	public void requestClose() {
+		if (search != null && search.box().isFocused()) {
+			setFocused(null);
+		}
+		super.requestClose();
+	}
+
+	// --------------------------------------------------------------- sidebar
+
+	/** Inset surface behind the sidebar entries. */
+	private static final class SidebarPanel extends UiComponent {
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			Render.roundedRect(graphics, x, y, width, height, theme.radiusCard, Render.alpha(0x000000, 0.22F * alpha));
+			Render.ring(graphics, x, y, width, height, theme.radiusCard, 1.0F, Render.alpha(theme.outlineSoft, alpha));
+			Ui.sectionLabel(graphics, UiWidgets.font(), "Modules", x + 12.0F, y + 12.0F, theme.textFaint, alpha);
+		}
+	}
+
+	/** One category entry: accent pill, item icon, label and module count. */
+	private static final class SidebarItem extends UiComponent {
 		private final ChaosClickGui gui;
 		private final Category category;
+		private final Anim.Value selectedAnim = new Anim.Value(0.0F, 16.0F);
 
-		private SidebarEntry(ChaosClickGui gui, Category category) {
+		private SidebarItem(ChaosClickGui gui, Category category) {
 			this.gui = gui;
 			this.category = category;
-			this.setTooltip(category.displayName());
+			this.setTooltip(category.displayName() + " — " + ModuleManager.byCategory(category).size() + " modules");
 		}
 
 		@Override
 		public void update(float deltaSeconds, float mouseX, float mouseY) {
 			super.update(deltaSeconds, mouseX, mouseY);
-			active.set(gui.selected == category ? 1.0F : 0.0F);
-			active.update(deltaSeconds);
+			selectedAnim.set(gui.selected == category && gui.query.isBlank() ? 1.0F : 0.0F);
+			selectedAnim.update(UiTheme.get().speed(16.0F));
 		}
 
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			float selectedAmount = active.get();
-			int background = Render.mix(0x00000000, Render.alpha(theme.accent, 0.30F), selectedAmount);
-			background = Render.mix(background, Render.alpha(0xFFFFFFFF, 0.06F), hover.get() * (1.0F - selectedAmount));
-			Render.roundedRect(graphics, x, y, width, height, theme.radius * 0.7F, background);
-			if (selectedAmount > 0.01F) {
-				Render.roundedRect(graphics, x, y + 4.0F, 2.5F * selectedAmount, height - 8.0F, 1.5F, category.color());
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
 			}
-			int textColor = Render.mix(theme.textDim, theme.text, Math.max(selectedAmount, hover.get()));
-			Render.text(graphics, gui.font(), category.displayName(), x + 24.0F, y + (height - 8.0F) * 0.5F - 0.5F, textColor, false);
-			Render.item(graphics, category.icon(), x + 6.0F, y + (height - 16.0F) * 0.5F);
+			UiTheme theme = UiTheme.get();
+			float selectedAmount = selectedAnim.get();
+			float hoverAmount = hover.get();
+			float radius = 9.0F;
+			int background = Render.mix(Render.alpha(0xFFFFFFFF, 0.0F),
+					Render.alpha(category.color(), 0.16F * alpha), selectedAmount);
+			background = Render.mix(background, Render.alpha(0xFFFFFFFF, 0.06F * alpha), hoverAmount * (1.0F - selectedAmount));
+			if (selectedAmount > 0.03F && theme.glow) {
+				Render.glow(graphics, x + width * 0.5F, centerY(), width * 0.55F, category.color(),
+						0.18F * selectedAmount * alpha);
+			}
+			Render.roundedRect(graphics, x, y, width, height, radius, background);
+			if (selectedAmount > 0.05F) {
+				Render.roundedRect(graphics, x, y + 5.0F, 2.5F, height - 10.0F, 1.25F,
+						Render.alpha(category.color(), alpha * selectedAmount));
+			}
+			Ui.iconTile(graphics, x + 6.0F, centerY() - 10.0F, 20.0F, 6.0F, category.color(),
+					alpha * (0.55F + 0.45F * Math.max(selectedAmount, hoverAmount * 0.8F)));
+			Ui.itemIcon(graphics, category.icon(), x + 16.0F, centerY(), 0.8F, alpha);
+			int textColor = Render.mix(theme.textDim, theme.text, Math.max(selectedAmount, hoverAmount * 0.7F));
+			Render.text(graphics, UiWidgets.font(), Render.ellipsize(UiWidgets.font(), category.displayName(),
+					width - 60.0F), x + 32.0F, centerY() - 4.0F, Render.alpha(textColor, alpha), false);
+			String count = String.valueOf(ModuleManager.byCategory(category).size());
+			Render.text(graphics, UiWidgets.font(), count, right() - 8.0F - UiWidgets.font().width(count), centerY() - 4.0F,
+					Render.alpha(Render.mix(theme.textFaint, category.color(), Math.max(selectedAmount, 0.25F)), alpha), false);
 		}
 
 		@Override
 		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (isHovered(mouseX, mouseY)) {
-				gui.selected = category;
-				gui.query = "";
-				if (gui.search != null) {
-					gui.search.setValue("");
-				}
-				gui.refreshCards();
-				gui.playClick(true);
-				return true;
+			if (!isHovered(mouseX, mouseY) || button != 0) {
+				return false;
 			}
-			return false;
+			gui.selected = category;
+			gui.query = "";
+			if (gui.search != null) {
+				gui.search.box().setValue("");
+			}
+			gui.playClick(true);
+			gui.refresh();
+			return true;
 		}
 	}
 
-	/** Scrollable, clipped container that keeps its children's hover state correct. */
-	private static final class ScrollPanel extends UiComponent {
-		private final Map<UiComponent, Float> baseY = new HashMap<>();
-		private float scroll;
-		private float content;
-		private float targetScroll;
+	// ------------------------------------------------------------------ cards
 
-		private void addCard(UiComponent card, float baseOffset) {
-			baseY.put(card, baseOffset);
-			card.setBounds(card.x(), y + baseOffset, card.width(), card.height());
-			addChild(card);
-		}
-
-		private void setContentHeight(float contentHeight) {
-			this.content = contentHeight;
-		}
-
-		@Override
-		public void update(float deltaSeconds, float mouseX, float mouseY) {
-			float maxScroll = Math.max(0.0F, content - height);
-			targetScroll = Anim.clamp(targetScroll, 0.0F, maxScroll);
-			scroll = Anim.approach(scroll, targetScroll, UiTheme.get().speed(14.0F), deltaSeconds);
-			for (UiComponent child : children()) {
-				Float base = baseY.get(child);
-				if (base != null) {
-					child.setBounds(child.x(), y + base - scroll, child.width(), child.height());
-				}
-			}
-			super.update(deltaSeconds, mouseX, mouseY);
-		}
-
-		@Override
-		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			Render.scissor(graphics, x, y, width, height);
-			renderChildren(graphics, mouseX, mouseY, deltaSeconds);
-			Render.unscissor(graphics);
-			float maxScroll = Math.max(1.0F, content - height);
-			if (content > height) {
-				float barHeight = Math.max(24.0F, height * (height / content));
-				float barY = y + (height - barHeight) * (scroll / maxScroll);
-				Render.roundedRect(graphics, x + width - 3.0F, barY, 3.0F, barHeight, 1.5F, Render.alpha(theme.accent, 0.65F));
-			}
-		}
-
-		@Override
-		public boolean mouseScrolled(float mouseX, float mouseY, double amount) {
-			if (isHovered(mouseX, mouseY)) {
-				targetScroll -= (float) amount * 24.0F;
-				return true;
-			}
-			return super.mouseScrolled(mouseX, mouseY, amount);
-		}
-
-		@Override
-		public void reset() {
-			super.reset();
-			baseY.clear();
-			scroll = 0.0F;
-			targetScroll = 0.0F;
-			content = 0.0F;
-		}
-	}
-
-	/** One feature: header with quick toggle plus every setting, animated expansion. */
+	/** One feature: header with switch and expanding settings. */
 	private static final class ModuleCard extends UiComponent {
+		private static final float HEADER_ROOMY = 46.0F;
+		private static final float HEADER_COMPACT = 40.0F;
+
 		private final ChaosClickGui gui;
 		private final Module module;
-		private final Anim.Value expand = new Anim.Value(0.0F, 12.0F);
+		private final String badge;
 		private final List<UiComponent> rows = new ArrayList<>();
+		private final Anim.Value expand = new Anim.Value(0.0F, 14.0F);
+		private final Anim.Value switchHover = new Anim.Value(0.0F, 16.0F);
+		private boolean rowsBuilt;
+		private boolean expandedBefore;
 
-		private ModuleCard(ChaosClickGui gui, Module module) {
+		private ModuleCard(ChaosClickGui gui, Module module, String badge) {
 			this.gui = gui;
 			this.module = module;
-			this.setTooltip(module.description());
-			buildRows();
-			expand.snap(expanded() ? 1.0F : 0.0F);
+			this.badge = badge;
+			this.setTooltip(module.description() + "\n§7" + module.category().displayName()
+					+ (keybindHint() == null ? "" : "  ·  key: " + keybindHint()));
+		}
+
+		private float headerHeight() {
+			return UiTheme.get().compact ? HEADER_COMPACT : HEADER_ROOMY;
 		}
 
 		private boolean expanded() {
 			return gui.expanded.getOrDefault(module.id(), Boolean.FALSE);
 		}
 
-		private void buildRows() {
-			UiTheme theme = UiTheme.get();
-			float rowHeight = theme.compact ? 18.0F : 20.0F;
+		private float rowsHeight() {
+			if (!expandedBefore || rows.isEmpty()) {
+				return 0.0F;
+			}
+			float total = 0.0F;
+			for (UiComponent row : rows) {
+				total += row.height() + 2.0F;
+			}
+			return total + 10.0F;
+		}
+
+		private void buildRows(float rowWidth) {
+			rows.clear();
+			clearChildren();
 			float y = 0.0F;
 			for (Setting<?> setting : module.settings()) {
 				if (setting == module.enabled()) {
 					continue;
 				}
 				UiComponent row = UiWidgets.forSetting(setting, gui);
-				row.setBounds(0.0F, y, width - 16.0F, rowHeight);
-				row.setTooltip(setting.description + (setting.description.isEmpty() ? "" : "\n") + "default: " + defaultHint(setting));
+				if (row == null) {
+					continue;
+				}
+				row.setBounds(0.0F, y, rowWidth, UiWidgets.rowHeight(setting));
+				row.setTooltip(setting.description
+						+ (setting.description == null || setting.description.isEmpty() ? "" : "\n")
+						+ "§7right-click to reset  ·  default " + setting.display());
 				rows.add(row);
-				y += rowHeight + 2.0F;
+				addChild(row);
+				y += row.height() + 2.0F;
 			}
+			rowsBuilt = true;
 		}
 
-		private String defaultHint(Setting<?> setting) {
-			return setting.isDefault() ? "current" : "changed";
-		}
-
-		private float extraHeight() {
-			return rows.isEmpty() ? 0.0F : (rows.get(0).height() + 2.0F) * rows.size() * expand.get();
+		private String keybindHint() {
+			if (!UiTheme.get().keybindHints) {
+				return null;
+			}
+			try {
+				return switch (module.id()) {
+					case "radial_menu" -> dev.chaosutils.core.Keybinds.radialMenu.getTranslatedKeyMessage().getString();
+					case "gui" -> dev.chaosutils.core.Keybinds.openGui.getTranslatedKeyMessage().getString();
+					case "zoom" -> dev.chaosutils.core.Keybinds.zoom.getTranslatedKeyMessage().getString();
+					case "perspective_lock" -> dev.chaosutils.core.Keybinds.freeLook.getTranslatedKeyMessage().getString();
+					case "container_search" -> dev.chaosutils.core.Keybinds.searchContainer.getTranslatedKeyMessage().getString();
+					case "chat_history" -> dev.chaosutils.core.Keybinds.chatHistory.getTranslatedKeyMessage().getString();
+					case "screenshots" -> dev.chaosutils.core.Keybinds.screenshotPopup.getTranslatedKeyMessage().getString();
+					case "gamma" -> dev.chaosutils.core.Keybinds.toggleGamma.getTranslatedKeyMessage().getString();
+					case "waypoint" -> dev.chaosutils.core.Keybinds.addWaypoint.getTranslatedKeyMessage().getString();
+					default -> null;
+				};
+			} catch (Throwable ignored) {
+				return null;
+			}
 		}
 
 		@Override
 		public void update(float deltaSeconds, float mouseX, float mouseY) {
-			expand.set(expanded() ? 1.0F : 0.0F);
-			expand.update(deltaSeconds);
-			float headerHeight = height;
-			float rowHeight = rows.isEmpty() ? 0.0F : rows.get(0).height() + 2.0F;
-			for (int i = 0; i < rows.size(); i++) {
-				UiComponent row = rows.get(i);
-				row.setBounds(x + 8.0F, y + headerHeight + 2.0F + i * rowHeight, width - 16.0F, row.height());
+			boolean expanded = expanded();
+			if (expanded && !rowsBuilt) {
+				buildRows(width - 24.0F);
 			}
-			// Only update rows that are inside the visible portion of the card.
-			float visibleHeight = expand.get() * rowHeight * rows.size();
-			for (int i = 0; i < rows.size(); i++) {
-				boolean visibleRow = (i + 1) * rowHeight <= visibleHeight + rowHeight;
-				rows.get(i).setVisible(visibleRow);
-				if (visibleRow) {
-					rows.get(i).update(deltaSeconds, mouseX, mouseY);
-				}
+			if (expanded) {
+				expandedBefore = true;
 			}
+			expand.set(expanded ? 1.0F : 0.0F);
+			expand.update(UiTheme.get().speed(14.0F));
+			float extra = expandedBefore ? rowsHeight() * Anim.easeOutQuint(expand.get()) : 0.0F;
+			height = headerHeight() + extra;
 			super.update(deltaSeconds, mouseX, mouseY);
+			switchHover.set(isOverSwitch(mouseX, mouseY) ? 1.0F : 0.0F);
+			switchHover.update(UiTheme.get().speed(16.0F));
+			float rowY = headerHeight() + 6.0F;
+			for (UiComponent row : rows) {
+				row.setBounds(x + 12.0F, y + rowY, width - 24.0F, row.height());
+				row.setLayerAlpha(layerAlpha * Anim.clamp01(expand.get()));
+				row.setVisible(expand.get() > 0.6F);
+				if (row.isVisible()) {
+					row.update(deltaSeconds, mouseX, mouseY);
+				}
+				rowY += row.height() + 2.0F;
+			}
+		}
+
+		private boolean isOverSwitch(float mouseX, float mouseY) {
+			float switchX = right() - 44.0F;
+			return mouseX >= switchX && mouseX <= switchX + 32.0F && mouseY >= y && mouseY <= y + headerHeight();
 		}
 
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
 			UiTheme theme = UiTheme.get();
+			float offset = appearOffset();
 			int accent = module.category().color();
 			boolean on = module.isEnabled();
-			float visibleHeight = expand.get() * (rows.isEmpty() ? 0.0F : (rows.get(0).height() + 2.0F) * rows.size());
-			float totalHeight = height + visibleHeight;
+			float radius = theme.radiusCard;
+			float hoverAmount = hover.get();
+			float expandAmount = expand.get();
 
-			int background = Render.mix(theme.panel, theme.panelHover, hover.get() * 0.7F);
-			Render.roundedRect(graphics, x, y, width, totalHeight, theme.radius, background);
-			Render.roundedBorder(graphics, x, y, width, totalHeight, theme.radius, 1.0F,
-					Render.alpha(on ? accent : 0xFFFFFFFF, on ? 0.45F : 0.08F), background);
-			if (on) {
-				Render.roundedRect(graphics, x, y + 5.0F, 2.5F, height - 10.0F, 1.25F, accent);
+			graphics.pose().pushMatrix();
+			graphics.pose().translate(0.0F, offset);
+
+			Ui.card(graphics, x, y, width, height, radius, theme, hoverAmount, on, alpha);
+
+			// Icon tile
+			Ui.iconTile(graphics, x + 12.0F, y + (headerHeight() - 26.0F) * 0.5F, 26.0F, 8.0F, accent, alpha);
+			Ui.itemIcon(graphics, module.category().icon(), x + 25.0F, y + headerHeight() * 0.5F, 0.95F, alpha);
+
+			float textX = x + 48.0F;
+			float textRight = x + width - 92.0F;
+			if (badge != null) {
+				int badgeWidth = UiWidgets.font().width(badge) + 12;
+				Render.roundedRect(graphics, textX, y + 9.0F, badgeWidth, 12.0F, 6.0F,
+						Render.alpha(accent, 0.18F * alpha));
+				Render.text(graphics, UiWidgets.font(), badge, textX + 6.0F, y + 11.0F, Render.alpha(accent, alpha), false);
+				textX += badgeWidth + 6.0F;
 			}
-			Render.item(graphics, module.category().icon(), x + 8.0F, y + (height - 16.0F) * 0.5F);
-			Render.text(graphics, gui.font(), module.name(), x + 28.0F, y + 6.0F, on ? theme.text : theme.textDim, false);
-			String subtitle = module.description();
-			while (gui.font().width(subtitle) > width - 120.0F && subtitle.length() > 6) {
-				subtitle = subtitle.substring(0, subtitle.length() - 2) + "…";
+			Render.boldText(graphics, UiWidgets.font(),
+					Render.ellipsize(UiWidgets.font(), module.name(), textRight - textX),
+					textX, y + 10.0F, Render.alpha(on ? theme.text : theme.textDim, alpha), false);
+
+			String keybind = keybindHint();
+			float descriptionRight = textRight;
+			if (keybind != null && !keybind.isEmpty()) {
+				int chipWidth = UiWidgets.font().width(keybind) + 12;
+				float chipX = textX + Math.min(UiWidgets.font().width(module.name()) + 8.0F, textRight - textX - chipWidth);
+				Render.roundedRect(graphics, chipX, y + 8.0F, chipWidth, 13.0F, 6.5F,
+						Render.alpha(0xFFFFFFFF, 0.07F * alpha));
+				Render.text(graphics, UiWidgets.font(), keybind, chipX + 6.0F, y + 10.5F,
+						Render.alpha(theme.textFaint, alpha), false);
 			}
-			Render.text(graphics, gui.font(), subtitle, x + 28.0F, y + height - 11.0F, theme.textFaint, false);
+			Render.text(graphics, UiWidgets.font(),
+					Render.ellipsize(UiWidgets.font(), module.description(), descriptionRight - textX),
+					textX, y + headerHeight() - 18.0F,
+					Render.alpha(Render.mix(theme.textFaint, theme.textDim, hoverAmount), alpha), false);
 
-			// quick toggle
-			float switchWidth = 26.0F;
-			float sx = x + width - switchWidth - 10.0F;
-			float sy = y + (height - 13.0F) * 0.5F;
-			int track = Render.mix(0xFF3A3A48, accent, on ? 1.0F : 0.0F);
-			Render.roundedRect(graphics, sx, sy, switchWidth, 13.0F, 6.5F, track);
-			float knob = 9.0F;
-			Render.roundedRect(graphics, sx + 2.0F + (on ? switchWidth - knob - 4.0F : 0.0F), sy + 2.0F, knob, knob, 4.5F, 0xFFFFFFFF);
+			// Switch (drawn here, not as a child, so the whole card stays one component).
+			float switchWidth = 30.0F;
+			float switchHeight = 16.0F;
+			float switchX = right() - switchWidth - 44.0F;
+			float switchY = y + (headerHeight() - switchHeight) * 0.5F;
+			float onAmount = on ? 1.0F : 0.0F;
+			int track = Render.mix(Render.alpha(theme.track, alpha),
+					Render.alpha(Render.mix(accent, 0xFFFFFFFF, switchHover.get() * 0.12F), alpha), onAmount);
+			if (onAmount > 0.05F && theme.glow) {
+				Render.glow(graphics, switchX + switchWidth * 0.5F, switchY + switchHeight * 0.5F, switchWidth * 1.15F,
+						accent, 0.30F * onAmount * alpha);
+			}
+			Render.roundedRect(graphics, switchX, switchY, switchWidth, switchHeight, switchHeight * 0.5F, track);
+			Render.ring(graphics, switchX, switchY, switchWidth, switchHeight, switchHeight * 0.5F, 1.0F,
+					Render.alpha(theme.outline, alpha));
+			float knobRadius = switchHeight * 0.5F - 1.6F;
+			float knobX = switchX + switchHeight * 0.5F + (switchWidth - switchHeight) * onAmount;
+			Ui.knob(graphics, knobX, switchY + switchHeight * 0.5F, knobRadius,
+					Render.mix(0xFFD7D8E4, 0xFFFFFFFF, onAmount), alpha);
 
-			Render.text(graphics, gui.font(), expanded() ? "▾" : "▸", x + width - switchWidth - 26.0F, y + (height - 8.0F) * 0.5F - 0.5F,
-					theme.textFaint, false);
+			// Expander chevron
+			float chevronX = right() - 22.0F;
+			float chevronY = y + headerHeight() * 0.5F;
+			Ui.chevron(graphics, chevronX, chevronY, 7.0F, 90.0F * expandAmount,
+					Render.alpha(Render.mix(theme.textFaint, theme.text, hoverAmount), alpha));
 
-			if (visibleHeight > 1.0F) {
-				Render.scissor(graphics, x, y + height, width, visibleHeight);
+			// Settings
+			if (expandAmount > 0.02F && expandedBefore) {
+				float clipTop = y + headerHeight();
+				float clipHeight = Math.max(0.0F, height - headerHeight());
+				Render.scissor(graphics, x, clipTop, width, clipHeight);
+				Ui.divider(graphics, x + 12.0F, y + headerHeight() + 2.0F, width - 24.0F, theme, alpha * 0.8F);
 				for (UiComponent row : rows) {
-					if (row.isVisible()) {
-						row.render(graphics, mouseX, mouseY, deltaSeconds);
+					if (!row.isVisible()) {
+						continue;
 					}
+					boolean rowHovered = row.contains(mouseX, mouseY);
+					if (rowHovered) {
+						Render.roundedRect(graphics, row.x() - 4.0F, row.y() - 2.0F, row.width() + 8.0F, row.height() + 2.0F,
+								6.0F, Render.alpha(0xFFFFFFFF, 0.045F * alpha));
+					}
+					row.render(graphics, mouseX, mouseY, deltaSeconds);
 				}
 				Render.unscissor(graphics);
 			}
+			graphics.pose().popMatrix();
 		}
 
 		@Override
 		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			float visibleHeight = expand.get() * (rows.isEmpty() ? 0.0F : (rows.get(0).height() + 2.0F) * rows.size());
-			if (visibleHeight > 1.0F && mouseY > y + height && mouseY <= y + height + visibleHeight) {
+			if (!isHovered(mouseX, mouseY)) {
+				return false;
+			}
+			boolean overSwitch = isOverSwitch(mouseX, mouseY);
+			float rowsTop = y + headerHeight();
+			if (button == 0 && expand.get() > 0.6F && mouseY > rowsTop) {
 				for (UiComponent row : rows) {
 					if (row.isVisible() && row.mouseClicked(mouseX, mouseY, button)) {
 						return true;
 					}
 				}
+				return true;
 			}
-			float switchWidth = 26.0F;
-			float sx = x + width - switchWidth - 10.0F;
-			if (mouseY >= y && mouseY <= y + height) {
-				if (mouseX >= sx - 2.0F && mouseX <= sx + switchWidth + 2.0F) {
-					if (button == 0) {
-						module.enabled().toggle();
-						gui.playClick(module.isEnabled());
-						return true;
-					}
-					if (button == 1) {
-						module.enabled().reset();
-						return true;
+			if (mouseY > y + headerHeight()) {
+				return false;
+			}
+			if (button == 0 && overSwitch) {
+				module.enabled().toggle();
+				gui.playClick(module.isEnabled());
+				return true;
+			}
+			if (button == 1) {
+				if (module.isEnabled()) {
+					module.enabled().toggle();
+				}
+				for (Setting<?> setting : module.settings()) {
+					if (setting != module.enabled()) {
+						setting.reset();
 					}
 				}
-				if (button == 0) {
-					gui.expanded.put(module.id(), !expanded());
-					gui.refreshCards();
-					gui.playClick(true);
-					return true;
-				}
+				gui.playClick(false);
+				gui.toast(module.name(), "reset to defaults", UiTheme.get().warning);
+				return true;
+			}
+			if (button == 0) {
+				gui.expanded.put(module.id(), !expanded());
+				gui.playClick(true);
+				return true;
 			}
 			return false;
 		}
@@ -4748,31 +5546,18 @@ public final class ChaosClickGui extends ChaosScreen {
 
 		@Override
 		public boolean mouseScrolled(float mouseX, float mouseY, double amount) {
-			return false;
-		}
-
-		@Override
-		public String tooltip() {
-			return module.description() + "\n§7" + module.category().displayName() + "  ·  " + keybindHint();
-		}
-
-		private String keybindHint() {
-			String key = switch (module.id()) {
-				case "radial_menu" -> dev.chaosutils.core.Keybinds.radialMenu == null ? "" : dev.chaosutils.core.Keybinds.radialMenu.getTranslatedKeyMessage().getString();
-				case "gui" -> dev.chaosutils.core.Keybinds.openGui == null ? "" : dev.chaosutils.core.Keybinds.openGui.getTranslatedKeyMessage().getString();
-				case "zoom" -> dev.chaosutils.core.Keybinds.zoom == null ? "" : dev.chaosutils.core.Keybinds.zoom.getTranslatedKeyMessage().getString();
-				default -> "";
-			};
-			if (key.isEmpty()) {
-				return "Rebind in Options → Controls";
+			for (UiComponent row : rows) {
+				if (row.isVisible() && row.mouseScrolled(mouseX, mouseY, amount)) {
+					return true;
+				}
 			}
-			return "default key: " + key;
+			return false;
 		}
 	}
 
-	/** Small helper so the widget package can query the currently typed search query. */
-	public String query() {
-		return query == null ? "" : query.toLowerCase(Locale.ROOT);
+	/** Search helper used by the list screens. */
+	public static List<Module> searchResults(String query) {
+		return ModuleManager.search(query == null ? "" : query.toLowerCase(Locale.ROOT));
 	}
 }
 ```
@@ -4791,97 +5576,80 @@ import dev.chaosutils.util.Anim;
 import dev.chaosutils.util.Render;
 import dev.chaosutils.util.SoundLookup;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
-import org.lwjgl.glfw.GLFW;
 
 /**
- * Base class for every ChaosUtils screen.
+ * Base class of every ChaosUtils screen.
  *
- * <p>Owns the component list, per-frame animation timing, the mouse routing (components
- * first, then vanilla children such as {@link EditBox}es), the shared text/colour popups and
- * a custom tooltip renderer. Input positions are taken from the last rendered frame, which
- * keeps everything independent of the 1.21.9+ {@code MouseButtonEvent} accessors - only
- * {@code button()} is read from the event itself.
+ * <p>Owns the floating window, the component list, the modal layer, the toast stack and the custom
+ * tooltip renderer. Screens only describe their layout in {@link #buildLayout()}.
+ *
+ * <p>Two details matter for the renderer: content is clipped to the window body with a scissor, and
+ * vanilla widgets (text fields) are only registered while no modal is open, so a dialog can never
+ * end up behind a shadow of a text field. Everything is drawn through {@link Render} - the game's
+ * own {@code renderBackground} is never called from here, because the screen pipeline already ran
+ * it (including the frame's single blur) before {@code render} is reached.
  */
 public abstract class ChaosScreen extends Screen {
-	protected final List<UiComponent> components = new ArrayList<>();
-	private final List<EditBox> inputs = new ArrayList<>();
-	private Consumer<String> activeInputHandler;
-	private EditBox activeInput;
-	private UiComponent popup;
-	private String popupTitle = "";
-	private float lastMouseX;
-	private float lastMouseY;
+	protected final Screen parent;
+	protected final UiWindow window;
+
+	private final List<UiComponent> content = new ArrayList<>();
+	private final List<EditBox> contentInputs = new ArrayList<>();
+	private final List<EditBox> modalInputs = new ArrayList<>();
+	private final List<UiModals.Modal> modals = new ArrayList<>();
+	private final List<Toast> toasts = new ArrayList<>();
+
+	private final Anim.Value appear = new Anim.Value(0.0F, 10.0F);
+	private final Anim.Value exit = new Anim.Value(0.0F, 14.0F);
+	private boolean closing;
+	private boolean closeDelivered;
 	private long lastFrameNanos;
 	protected float deltaSeconds;
-	protected final Anim.Value openAnim = new Anim.Value(0.0F, 9.0F);
-	private boolean escapeArmed = true;
+	private float mouseX;
+	private float mouseY;
+	/** Window position the current layout was built for; dragging shifts the drawing instead of
+	 *  rebuilding (which would restart every entrance animation every frame). */
+	private float layoutX;
+	private float layoutY;
+	private float offsetX;
+	private float offsetY;
+	private UiWidgets.KeyField listeningField;
 
-	protected ChaosScreen(Component title) {
+	protected ChaosScreen(Screen parent, Component title, String windowKey, float defaultWidth, float defaultHeight) {
 		super(title);
+		this.parent = parent;
+		this.window = new UiWindow(windowKey, defaultWidth, defaultHeight);
 	}
 
+	// -------------------------------------------------------------- lifecycle
+
+	/** Builds the component list; called on init and whenever the layout changes. */
 	protected abstract void buildLayout();
 
 	@Override
 	protected void init() {
-		components.clear();
-		inputs.clear();
-		popup = null;
-		activeInput = null;
-		activeInputHandler = null;
-		openAnim.snap(0.0F);
-		escapeArmed = true;
+		content.clear();
+		contentInputs.clear();
+		modalInputs.clear();
+		modals.clear();
+		listeningField = null;
+		closing = false;
+		closeDelivered = false;
+		appear.snap(0.0F);
+		exit.snap(0.0F);
+		window.open(this.width, this.height);
+		layoutX = window.x();
+		layoutY = window.y();
+		offsetX = 0.0F;
+		offsetY = 0.0F;
 		buildLayout();
-	}
-
-	public UiTheme theme() {
-		return UiTheme.get();
-	}
-
-	/** Public accessor so widgets can measure text with the screen's font. */
-	public net.minecraft.client.gui.Font font() {
-		return this.font;
-	}
-
-	protected void add(UiComponent component) {
-		components.add(component);
-	}
-
-	/** Registers a vanilla text field so it participates in vanilla input handling. */
-	protected EditBox addInput(EditBox input) {
-		inputs.add(input);
-		addRenderableWidget(input);
-		return input;
-	}
-
-	protected void clearInputs() {
-		for (EditBox input : inputs) {
-			removeWidget(input);
-		}
-		inputs.clear();
-	}
-
-	protected List<EditBox> inputs() {
-		return inputs;
-	}
-
-	public void playClick(boolean positive) {
-		if (!theme().sounds || minecraft == null || minecraft.level == null) {
-			return;
-		}
-		try {
-			var sound = SoundLookup.ui(SoundLookup.uiClick(), positive ? 1.7F : 1.2F, 0.35F);
-			if (sound != null) {
-				minecraft.getSoundManager().play(sound);
-			}
-		} catch (Throwable ignored) {
-			// audio is optional
-		}
 	}
 
 	@Override
@@ -4891,273 +5659,29 @@ public abstract class ChaosScreen extends Screen {
 
 	@Override
 	public boolean shouldCloseOnEsc() {
-		if (popup != null) {
-			// ESC closes the popup first, handled in tick() by polling.
-			return false;
-		}
 		return true;
 	}
 
-	@Override
-	public void tick() {
-		super.tick();
-		handlePolledKeys();
+	/** Animated close: the screen asks the game to switch back once the fade has played out. */
+	public void requestClose() {
+		if (!closing) {
+			closing = true;
+			exit.set(1.0F);
+			for (UiModals.Modal modal : modals) {
+				modal.close();
+			}
+			window.beginClose();
+			clearModalInputs();
+		}
 	}
 
-	/** ESC/Enter inside popups is polled from GLFW so no input-event accessors are needed. */
-	private void handlePolledKeys() {
-		if (popup == null) {
-			escapeArmed = true;
-			return;
-		}
-		if (dev.chaosutils.util.InputUtil.isPressed(GLFW.GLFW_KEY_ESCAPE)) {
-			if (escapeArmed) {
-				escapeArmed = false;
-				closePopup(false);
-			}
-			return;
-		}
-		escapeArmed = true;
-		if (dev.chaosutils.util.InputUtil.isPressed(GLFW.GLFW_KEY_ENTER) || dev.chaosutils.util.InputUtil.isPressed(GLFW.GLFW_KEY_KP_ENTER)) {
-			closePopup(true);
-		}
+	/** Called once the close animation has finished, before the parent screen is restored. */
+	protected void onClosed() {
 	}
 
 	@Override
-	public void render(GuiGraphics graphics, int mouseX, int mouseY, float deltaTicks) {
-		long now = System.nanoTime();
-		deltaSeconds = lastFrameNanos == 0 ? 0.016F : Math.min(0.1F, (now - lastFrameNanos) / 1_000_000_000.0F);
-		lastFrameNanos = now;
-		lastMouseX = mouseX;
-		lastMouseY = mouseY;
-		openAnim.set(1.0F);
-		openAnim.update(deltaSeconds);
-
-		renderBackdrop(graphics, mouseX, mouseY, deltaTicks);
-
-		float eased = Anim.easeOutCubic(openAnim.get());
-		float offsetY = (1.0F - eased) * 12.0F;
-
-		graphics.pose().pushMatrix();
-		graphics.pose().translate(0.0F, offsetY);
-		for (UiComponent component : components) {
-			if (component.isVisible()) {
-				component.render(graphics, mouseX, mouseY, deltaSeconds);
-			}
-		}
-		if (popup != null) {
-			renderPopup(graphics, mouseX, mouseY);
-		}
-		graphics.pose().popMatrix();
-
-		renderTooltipLayer(graphics, mouseX, mouseY);
-		super.render(graphics, mouseX, mouseY, deltaTicks);
-	}
-
-	/**
-	 * Paints the theme backdrop. Delegates to {@link Backdrop}, which never calls the vanilla
-	 * {@code renderBackground(...)} - the game already ran that (including the frame's only blur)
-	 * before this method is reached, and a second call throws.
-	 */
-	protected void renderBackdrop(GuiGraphics graphics, int mouseX, int mouseY, float deltaTicks) {
-		Backdrop.render(graphics, this, theme());
-	}
-
-	private void renderTooltipLayer(GuiGraphics graphics, float mouseX, float mouseY) {
-		if (popup != null || !theme().tooltips) {
-			return;
-		}
-		String tooltip = hoveredTooltip(mouseX, mouseY);
-		if (tooltip == null || tooltip.isEmpty()) {
-			return;
-		}
-		String[] lines = tooltip.split("\n");
-		int widest = 0;
-		for (String line : lines) {
-			widest = Math.max(widest, this.font.width(line));
-		}
-		float boxWidth = widest + 12.0F;
-		float boxHeight = lines.length * 10.0F + 8.0F;
-		float bx = Math.min(mouseX + 10.0F, this.width - boxWidth - 4.0F);
-		float by = Math.min(mouseY + 12.0F, this.height - boxHeight - 4.0F);
-		Render.shadowedPanel(graphics, bx, by, boxWidth, boxHeight, 4.0F, 0xF0101018, theme().accent);
-		for (int i = 0; i < lines.length; i++) {
-			Render.text(graphics, this.font, lines[i], bx + 6.0F, by + 4.0F + i * 10.0F, theme().text, false);
-		}
-	}
-
-	private String hoveredTooltip(float mouseX, float mouseY) {
-		for (int i = components.size() - 1; i >= 0; i--) {
-			UiComponent component = components.get(i);
-			if (component.isVisible() && component.contains(mouseX, mouseY) && component.tooltip() != null) {
-				return component.tooltip();
-			}
-		}
-		return null;
-	}
-
-	@Override
-	public boolean mouseClicked(MouseButtonEvent event, boolean doubled) {
-		int button = event.button();
-		if (popup != null) {
-			if (popup.mouseClicked(xFromClick(button), yFromClick(button), button) || popup.contains(lastMouseX, lastMouseY)) {
-				return true;
-			}
-			closePopup(false);
-			return true;
-		}
-		for (int i = components.size() - 1; i >= 0; i--) {
-			UiComponent component = components.get(i);
-			if (component.isVisible() && component.mouseClicked(lastMouseX, lastMouseY, button)) {
-				return true;
-			}
-		}
-		return super.mouseClicked(event, doubled);
-	}
-
-	@Override
-	public boolean mouseReleased(MouseButtonEvent event) {
-		int button = event.button();
-		if (popup != null && popup.mouseReleased(lastMouseX, lastMouseY, button)) {
-			return true;
-		}
-		for (int i = components.size() - 1; i >= 0; i--) {
-			UiComponent component = components.get(i);
-			if (component.isVisible() && component.mouseReleased(lastMouseX, lastMouseY, button)) {
-				return true;
-			}
-		}
-		return super.mouseReleased(event);
-	}
-
-	@Override
-	public boolean mouseDragged(MouseButtonEvent event, double deltaX, double deltaY) {
-		int button = event.button();
-		if (popup != null && popup.mouseDragged(lastMouseX, lastMouseY, button, (float) deltaX, (float) deltaY)) {
-			return true;
-		}
-		for (int i = components.size() - 1; i >= 0; i--) {
-			UiComponent component = components.get(i);
-			if (component.isVisible() && component.mouseDragged(lastMouseX, lastMouseY, button, (float) deltaX, (float) deltaY)) {
-				return true;
-			}
-		}
-		return super.mouseDragged(event, deltaX, deltaY);
-	}
-
-	@Override
-	public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
-		for (int i = components.size() - 1; i >= 0; i--) {
-			UiComponent component = components.get(i);
-			if (component.isVisible() && component.mouseScrolled((float) mouseX, (float) mouseY, verticalAmount)) {
-				return true;
-			}
-		}
-		return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
-	}
-
-	private float xFromClick(int button) {
-		return lastMouseX;
-	}
-
-	private float yFromClick(int button) {
-		return lastMouseY;
-	}
-
-	protected float mouseX() {
-		return lastMouseX;
-	}
-
-	protected float mouseY() {
-		return lastMouseY;
-	}
-
-	protected float deltaSeconds() {
-		return deltaSeconds;
-	}
-
-	// -------------------------------------------------------------------- popups
-
-	protected void openTextEditor(Setting.Text setting) {
-		openTextEditor(setting.label, setting.get(), setting.maxLength(), setting::set);
-	}
-
-	protected void openTextEditor(String title, String initial, int maxLength, Consumer<String> onAccept) {
-		this.popupTitle = title;
-		this.activeInputHandler = onAccept;
-		this.activeInput = new EditBox(this.font, 0, 0, 200, 16, Component.literal(title));
-		this.activeInput.setMaxLength(maxLength);
-		this.activeInput.setValue(initial);
-		this.activeInput.setBordered(false);
-		this.activeInput.setTextColor(0xFFF2F2F7);
-		addInput(this.activeInput);
-		setFocused(this.activeInput);
-		rebuildPopup();
-	}
-
-	protected void openColorPicker(Setting.Color setting) {
-		this.popupTitle = setting.label;
-		UiWidgets.ColorPicker picker = new UiWidgets.ColorPicker(this, setting);
-		this.popup = picker;
-		this.activeInputHandler = null;
-		layoutPopup();
-	}
-
-	private void rebuildPopup() {
-		if (activeInput == null) {
-			return;
-		}
-		this.popup = new UiWidgets.TextPopup(this);
-		layoutPopup();
-	}
-
-	private void layoutPopup() {
-		if (popup == null) {
-			return;
-		}
-		float popupWidth = Math.max(220.0F, popup.width());
-		float popupHeight = Math.max(90.0F, popup.height());
-		float px = (this.width - popupWidth) * 0.5F;
-		float py = (this.height - popupHeight) * 0.5F;
-		popup.setBounds(px, py, popupWidth, popupHeight);
-		if (popup instanceof UiWidgets.TextPopup textPopup) {
-			textPopup.layout(px, py, popupWidth, popupHeight, activeInput);
-		}
-		if (popup instanceof UiWidgets.ColorPicker picker) {
-			picker.layout(px, py, popupWidth, popupHeight);
-		}
-	}
-
-	protected void closePopup(boolean accept) {
-		if (accept && activeInput != null && activeInputHandler != null) {
-			activeInputHandler.accept(activeInput.getValue());
-		}
-		if (activeInput != null) {
-			removeWidget(activeInput);
-			inputs.remove(activeInput);
-			activeInput = null;
-		}
-		activeInputHandler = null;
-		popup = null;
-		setFocused(null);
-	}
-
-	private void renderPopup(GuiGraphics graphics, float mouseX, float mouseY) {
-		Render.rect(graphics, 0.0F, 0.0F, this.width, this.height, 0x88000000);
-		popup.render(graphics, mouseX, mouseY, deltaSeconds);
-		Render.centeredText(graphics, this.font, popupTitle, popup.x() + popup.width() * 0.5F, popup.y() + 8.0F, theme().text, false);
-	}
-
-	protected String popupTitle() {
-		return popupTitle;
-	}
-
-	protected EditBox activeInput() {
-		return activeInput;
-	}
-
-	protected Minecraft client() {
-		return this.minecraft;
+	public void onClose() {
+		requestClose();
 	}
 
 	@Override
@@ -5166,11 +5690,634 @@ public abstract class ChaosScreen extends Screen {
 		super.removed();
 	}
 
-	/** Hook used by the click GUI to open the HUD editor; overridden where meaningful. */
+	@Override
+	public void tick() {
+		super.tick();
+		if (window.isGone() && closing && !closeDelivered) {
+			closeDelivered = true;
+			onClosed();
+			if (this.minecraft != null) {
+				this.minecraft.setScreen(parent);
+			}
+		}
+	}
+
+	// -------------------------------------------------------------- accessors
+
+	public UiTheme theme() {
+		return UiTheme.get();
+	}
+
+	/** Font accessor for widgets. */
+	public Font font() {
+		return this.font;
+	}
+
+	protected UiWindow window() {
+		return window;
+	}
+
+	protected float bodyX() {
+		return window.bodyX();
+	}
+
+	protected float bodyY() {
+		return window.bodyY();
+	}
+
+	protected float bodyWidth() {
+		return window.bodyWidth();
+	}
+
+	protected float bodyHeight() {
+		return window.bodyHeight();
+	}
+
+	protected float alpha() {
+		return Anim.clamp01(appear.get()) * window.alpha();
+	}
+
+	protected float mouseX() {
+		return mouseX;
+	}
+
+	protected float mouseY() {
+		return mouseY;
+	}
+
+	protected boolean hasModal() {
+		return !modals.isEmpty();
+	}
+
+	protected void add(UiComponent component) {
+		content.add(component);
+	}
+
+	protected void clearContent() {
+		content.clear();
+	}
+
+	protected List<UiComponent> components() {
+		return content;
+	}
+
+	/** Rebuilds the layout while keeping the window position and size. */
+	protected void refresh() {
+		content.clear();
+		layoutX = window.x();
+		layoutY = window.y();
+		offsetX = 0.0F;
+		offsetY = 0.0F;
+		buildLayout();
+		for (UiComponent component : content) {
+			component.snapAppear();
+		}
+	}
+
+	/** Content coordinates of the pointer (the layout is anchored to the window position). */
+	protected float contentMouseX() {
+		return mouseX - offsetX;
+	}
+
+	protected float contentMouseY() {
+		return mouseY - offsetY;
+	}
+
+	// ---------------------------------------------------------------- inputs
+
+	/** Registers a vanilla text field so IME, clipboard and selection behave like vanilla. */
+	public EditBox addInput(EditBox input) {
+		contentInputs.add(input);
+		addRenderableWidget(input);
+		return input;
+	}
+
+	public void removeInput(EditBox input) {
+		contentInputs.remove(input);
+		removeWidget(input);
+	}
+
+	/** Registers a text field that belongs to a modal (stays visible above the dim layer). */
+	public EditBox addModalInput(EditBox input) {
+		modalInputs.add(input);
+		addRenderableWidget(input);
+		setFocused(input);
+		return input;
+	}
+
+	protected void clearInputs() {
+		for (EditBox input : contentInputs) {
+			removeWidget(input);
+		}
+		for (EditBox input : modalInputs) {
+			removeWidget(input);
+		}
+		contentInputs.clear();
+		modalInputs.clear();
+	}
+
+	private void hideContentInputs() {
+		for (EditBox input : contentInputs) {
+			removeWidget(input);
+		}
+	}
+
+	private void showContentInputs() {
+		for (EditBox input : contentInputs) {
+			addRenderableWidget(input);
+		}
+		setFocused(null);
+	}
+
+	private void clearModalInputs() {
+		for (EditBox input : modalInputs) {
+			removeWidget(input);
+		}
+		modalInputs.clear();
+		setFocused(null);
+	}
+
+	// ----------------------------------------------------------------- modals
+
+	protected void pushModal(UiModals.Modal modal) {
+		modal.setScreenBounds(this.width, this.height);
+		hideContentInputs();
+		modals.add(modal);
+	}
+
+	/** Hook for screens that need to react when one of their dialogs is done. */
+	protected void modalClosed(UiModals.Modal modal) {
+	}
+
+	/** Text editor dialog used by string settings and by the list screens. */
+	public void openTextModal(String title, String initial, int maxLength, Consumer<String> onAccept) {
+		EditBox box = new EditBox(this.font, 0, 0, 200, 16, Component.literal(title));
+		box.setBordered(false);
+		box.setTextColor(0xFFF4F5FA);
+		UiModals.TextPrompt prompt = new UiModals.TextPrompt(title, "Type here…", initial, maxLength, onAccept, box);
+		prompt.place(this.width * 0.5F, this.height * 0.5F);
+		addModalInput(box);
+		pushModal(prompt);
+	}
+
+	/** Colour picker for any colour setting. */
+	public void openColorModal(Setting.Color setting) {
+		UiModals.ColorPicker picker = UiModals.colorPicker(setting, this::addModalInput);
+		picker.place(this.width * 0.5F, this.height * 0.5F);
+		pushModal(picker);
+	}
+
+	public void openConfirm(String title, String message, String confirmLabel, Runnable onConfirm) {
+		pushModal(UiModals.confirm(title, message, confirmLabel, onConfirm));
+	}
+
+	public void openInfo(String title, String message) {
+		pushModal(UiModals.info(title, message));
+	}
+
+	// ----------------------------------------------------------------- toasts
+
+	public void toast(String message) {
+		toast(null, message, theme().accent);
+	}
+
+	public void toast(String title, String message, int color) {
+		Toast toast = new Toast(title, message, color);
+		toast.slide.snap(0.0F);
+		toasts.add(toast);
+		while (toasts.size() > 4) {
+			toasts.remove(0);
+		}
+	}
+
+	// ------------------------------------------------------------------ sound
+
+	public void playClick(boolean positive) {
+		if (!theme().sounds || this.minecraft == null || this.minecraft.level == null) {
+			return;
+		}
+		try {
+			var sound = SoundLookup.ui(SoundLookup.uiClick(), positive ? 1.7F : 1.2F, 0.35F);
+			if (sound != null) {
+				this.minecraft.getSoundManager().play(sound);
+			}
+		} catch (Throwable ignored) {
+			// UI sounds are optional
+		}
+	}
+
+	// ----------------------------------------------------------------- render
+
+	@Override
+	public void render(GuiGraphics graphics, int mouseX, int mouseY, float deltaTicks) {
+		long now = System.nanoTime();
+		deltaSeconds = lastFrameNanos == 0 ? 0.016F : Math.min(0.1F, (now - lastFrameNanos) / 1_000_000_000.0F);
+		lastFrameNanos = now;
+		this.mouseX = mouseX;
+		this.mouseY = mouseY;
+
+		appear.set(1.0F);
+		appear.update(theme().speed(10.0F));
+		if (closing) {
+			exit.update(theme().speed(14.0F));
+		}
+		tickAnimations();
+
+		Backdrop.render(graphics, this, theme());
+
+		// ------- window and content
+		window.update(deltaSeconds, mouseX, mouseY);
+		offsetX = window.x() - layoutX;
+		offsetY = window.y() - layoutY;
+		float windowAlpha = alpha();
+		boolean modalOpen = !modals.isEmpty();
+		float contentAlpha = windowAlpha * (modalOpen ? 0.35F : 1.0F);
+		window.renderShell(graphics, theme());
+		renderHeader(graphics, windowAlpha);
+
+		Render.scissor(graphics, layoutBodyX() + offsetX, layoutBodyY() + offsetY, window.bodyWidth(), window.bodyHeight());
+		graphics.pose().pushMatrix();
+		graphics.pose().translate(offsetX, offsetY);
+		for (UiComponent component : content) {
+			if (component.isVisible()) {
+				component.setLayerAlpha(contentAlpha);
+				component.render(graphics, contentMouseX(), contentMouseY(), deltaSeconds);
+			}
+		}
+		graphics.pose().popMatrix();
+		Render.unscissor(graphics);
+
+		// ------- vanilla widgets (text fields)
+		super.render(graphics, mouseX, mouseY, deltaTicks);
+
+		// ------- content that lives in screen space instead of inside the window
+		renderScreenSpace(graphics, mouseX, mouseY);
+
+		// ------- modals
+		for (int i = 0; i < modals.size(); i++) {
+			UiModals.Modal modal = modals.get(i);
+			modal.setLayerAlpha(1.0F);
+			modal.render(graphics, mouseX, mouseY, deltaSeconds);
+		}
+
+		// ------- toasts (always on top of the interface)
+		renderToasts(graphics);
+
+		// ------- tooltip + footer
+		renderFooter(graphics, windowAlpha);
+		renderTooltip(graphics);
+	}
+
+	/**
+	 * Screens may draw and interact outside of the window (the HUD editor drags its overlay ghosts
+	 * across the whole screen). Called after the window, before the modals.
+	 */
+	protected void renderScreenSpace(GuiGraphics graphics, float mouseX, float mouseY) {
+	}
+
+	/** Screen-space click. Returning {@code true} consumes the click. */
+	protected boolean mouseClickedScreenSpace(float mouseX, float mouseY, int button) {
+		return false;
+	}
+
+	/** Screen-space drag, checked before the window so a drag can leave the window. */
+	protected boolean mouseDraggedScreenSpace(float mouseX, float mouseY, int button, float deltaX, float deltaY) {
+		return false;
+	}
+
+	/** Screen-space release, checked before the window for the same reason. */
+	protected boolean mouseReleasedScreenSpace(float mouseX, float mouseY, int button) {
+		return false;
+	}
+
+	/** Window header text; screens can replace it to show context. */
+	protected void renderHeader(GuiGraphics graphics, float alpha) {
+		Render.text(graphics, this.font, this.title.getString(), window.x() + 16.0F, window.y() + 13.0F,
+				Render.alpha(theme().text, alpha), false);
+	}
+
+	private float layoutBodyX() {
+		return layoutX;
+	}
+
+	private float layoutBodyY() {
+		return layoutY + window.titleHeight();
+	}
+
+	/** Optional footer line at the bottom of the content area. */
+	protected void renderFooter(GuiGraphics graphics, float alpha) {
+	}
+
+	private void renderToasts(GuiGraphics graphics) {
+		if (toasts.isEmpty()) {
+			return;
+		}
+		UiTheme theme = theme();
+		float baseY = this.height - 30.0F;
+		for (int i = toasts.size() - 1; i >= 0; i--) {
+			Toast toast = toasts.get(i);
+			float alpha = toast.alpha();
+			if (alpha <= 0.01F) {
+				continue;
+			}
+			String text = toast.title == null || toast.title.isEmpty()
+					? toast.message
+					: toast.title + "  ·  " + toast.message;
+			float width = Math.min(300.0F, this.font.width(text) + 40.0F);
+			float x = (this.width - width) * 0.5F;
+			float y = baseY - (toasts.size() - 1 - i) * 26.0F + toast.offset();
+			Render.softShadow(graphics, x, y, width, 22.0F, 11.0F, 0.8F * alpha);
+			Render.roundedRect(graphics, x, y, width, 22.0F, 11.0F, Render.alpha(theme.windowBottom, alpha));
+			Render.ring(graphics, x, y, width, 22.0F, 11.0F, 1.0F, Render.alpha(theme.outlineSoft, alpha));
+			Ui.dot(graphics, x + 12.0F, y + 11.0F, 3.0F, Render.alpha(toast.color, alpha));
+			Render.text(graphics, this.font, Render.ellipsize(this.font, text, width - 34.0F), x + 22.0F, y + 7.0F,
+					Render.alpha(theme.text, alpha), false);
+		}
+	}
+
+	private void renderTooltip(GuiGraphics graphics) {
+		if (!theme().tooltips || hasModal()) {
+			return;
+		}
+		String tooltip = hoveredTooltip();
+		if (tooltip == null || tooltip.isEmpty()) {
+			return;
+		}
+		UiTheme theme = theme();
+		List<String> lines = new ArrayList<>();
+		for (String raw : tooltip.split("\n")) {
+			lines.addAll(UiModals.Dialog.wrap(raw, 190.0F));
+		}
+		int widest = 0;
+		for (String line : lines) {
+			widest = Math.max(widest, this.font.width(line));
+		}
+		float boxWidth = widest + 18.0F;
+		float boxHeight = lines.size() * 11.0F + 12.0F;
+		float x = Anim.clamp(mouseX + 12.0F, 4.0F, this.width - boxWidth - 4.0F);
+		float y = Anim.clamp(mouseY + 14.0F, 4.0F, this.height - boxHeight - 4.0F);
+		Render.softShadow(graphics, x, y, boxWidth, boxHeight, 7.0F, 1.0F);
+		Render.roundedRect(graphics, x, y, boxWidth, boxHeight, 7.0F, Render.alpha(0xF4141420, 0.98F));
+		Render.ring(graphics, x, y, boxWidth, boxHeight, 7.0F, 1.0F, Render.alpha(theme.outlineStrong, 1.0F));
+		for (int i = 0; i < lines.size(); i++) {
+			int color = i == 0 ? theme.text : theme.textDim;
+			Render.text(graphics, this.font, lines.get(i), x + 9.0F, y + 6.0F + i * 11.0F, color, false);
+		}
+	}
+
+	private String hoveredTooltip() {
+		if (!modals.isEmpty()) {
+			UiModals.Modal top = modals.get(modals.size() - 1);
+			return top.contains(mouseX, mouseY) ? top.tooltip() : null;
+		}
+		for (int i = content.size() - 1; i >= 0; i--) {
+			UiComponent component = content.get(i);
+			if (!component.isVisible() || !component.contains(mouseX, mouseY)) {
+				continue;
+			}
+			String tip = deepestTooltip(component);
+			if (tip != null) {
+				return tip;
+			}
+		}
+		return null;
+	}
+
+	/** Walks the component tree so a hovered setting row wins over its card. */
+	private String deepestTooltip(UiComponent component) {
+		for (UiComponent child : component.children()) {
+			if (child.isVisible() && child.contains(mouseX, mouseY)) {
+				String tip = deepestTooltip(child);
+				if (tip != null) {
+					return tip;
+				}
+			}
+		}
+		return component.tooltip();
+	}
+
+	// ------------------------------------------------------------------ input
+
+	@Override
+	public boolean mouseClicked(MouseButtonEvent event, boolean doubled) {
+		float clickX = (float) event.x();
+		float clickY = (float) event.y();
+		int button = event.button();
+		this.mouseX = clickX;
+		this.mouseY = clickY;
+		if (closing) {
+			return true;
+		}
+		if (!modals.isEmpty()) {
+			UiModals.Modal top = modals.get(modals.size() - 1);
+			top.setScreenBounds(this.width, this.height);
+			return top.mouseClicked(clickX, clickY, button) || super.mouseClicked(event, doubled);
+		}
+		// A key field that is waiting for a key must not be disturbed by plain clicks elsewhere.
+		for (int i = content.size() - 1; i >= 0; i--) {
+			UiComponent component = content.get(i);
+			if (component.isVisible() && component.mouseClicked(clickX - offsetX, clickY - offsetY, button)) {
+				return true;
+			}
+		}
+		if (window.mouseClicked(clickX, clickY, button)) {
+			return true;
+		}
+		if (mouseClickedScreenSpace(clickX, clickY, button)) {
+			return true;
+		}
+		return super.mouseClicked(event, doubled);
+	}
+
+	@Override
+	public boolean mouseReleased(MouseButtonEvent event) {
+		float clickX = (float) event.x();
+		float clickY = (float) event.y();
+		int button = event.button();
+		if (!modals.isEmpty()) {
+			return modals.get(modals.size() - 1).mouseReleased(clickX, clickY, button) || super.mouseReleased(event);
+		}
+		boolean handled = mouseReleasedScreenSpace(clickX, clickY, button);
+		if (window.mouseReleased(button)) {
+			handled = true;
+		}
+		for (int i = content.size() - 1; i >= 0; i--) {
+			UiComponent component = content.get(i);
+			if (component.isVisible() && component.mouseReleased(clickX - offsetX, clickY - offsetY, button)) {
+				handled = true;
+			}
+		}
+		if (window.wasResized()) {
+			// A resize changes the available width, so the layout is rebuilt once at the end.
+			refresh();
+			handled = true;
+		}
+		return handled || super.mouseReleased(event);
+	}
+
+	@Override
+	public boolean mouseDragged(MouseButtonEvent event, double deltaX, double deltaY) {
+		float clickX = (float) event.x();
+		float clickY = (float) event.y();
+		int button = event.button();
+		if (!modals.isEmpty()) {
+			return modals.get(modals.size() - 1).mouseDragged(clickX, clickY, button, (float) deltaX, (float) deltaY)
+					|| super.mouseDragged(event, deltaX, deltaY);
+		}
+		if (mouseDraggedScreenSpace(clickX, clickY, button, (float) deltaX, (float) deltaY)) {
+			return true;
+		}
+		if (window.mouseDragged(clickX, clickY, button)) {
+			// Dragging only shifts the drawing (see offsetX/offsetY); no rebuild needed.
+			return true;
+		}
+		for (int i = content.size() - 1; i >= 0; i--) {
+			UiComponent component = content.get(i);
+			if (component.isVisible() && component.mouseDragged(clickX - offsetX, clickY - offsetY, button,
+					(float) deltaX, (float) deltaY)) {
+				return true;
+			}
+		}
+		return super.mouseDragged(event, deltaX, deltaY);
+	}
+
+	@Override
+	public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
+		if (!modals.isEmpty()) {
+			return true;
+		}
+		for (int i = content.size() - 1; i >= 0; i--) {
+			UiComponent component = content.get(i);
+			if (component.isVisible()
+					&& component.mouseScrolled((float) mouseX - offsetX, (float) mouseY - offsetY, verticalAmount)) {
+				return true;
+			}
+		}
+		return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
+	}
+
+	@Override
+	public boolean keyPressed(KeyEvent event) {
+		if (closing) {
+			return true;
+		}
+		// Escape closes the top modal first, then the screen - never the game menu.
+		if (event.isEscape()) {
+			if (listeningField != null) {
+				listeningField.cancelListening();
+				listeningField = null;
+				return true;
+			}
+			if (!modals.isEmpty()) {
+				modals.get(modals.size() - 1).close();
+				return true;
+			}
+			requestClose();
+			return true;
+		}
+		// Enter accepts the top modal (text prompts and colour pickers).
+		if ((event.key() == 257 || event.key() == 335) && !modals.isEmpty()) {
+			UiModals.Modal top = modals.get(modals.size() - 1);
+			if (top instanceof UiModals.TextPrompt prompt) {
+				prompt.accept();
+				return true;
+			}
+		}
+		return super.keyPressed(event);
+	}
+
+	/** Screens call this while a hotkey field is capturing input. */
+	protected void setListeningField(UiWidgets.KeyField field) {
+		this.listeningField = field;
+	}
+
+	/** Tracks modal completion so inputs can be restored exactly once. */
+	protected final void updateModals(float deltaSeconds) {
+		for (int i = modals.size() - 1; i >= 0; i--) {
+			UiModals.Modal modal = modals.get(i);
+			modal.setScreenBounds(this.width, this.height);
+			modal.update(deltaSeconds, mouseX, mouseY);
+			if (modal.isFinished()) {
+				modals.remove(i);
+				clearModalInputs();
+				if (modals.isEmpty()) {
+					showContentInputs();
+				}
+				modalClosed(modal);
+			}
+		}
+	}
+
+	/** Runs the per-frame update pass of every content component. */
+	protected final void updateContent(float deltaSeconds) {
+		for (UiComponent component : content) {
+			if (component.isVisible()) {
+				component.setLayerAlpha(alpha());
+				component.update(deltaSeconds, contentMouseX(), contentMouseY());
+			}
+		}
+	}
+
+	@Override
 	public void openHudEditor() {
 		if (this.minecraft != null) {
 			this.minecraft.setScreen(new HudEditorScreen(this));
 		}
+	}
+
+	// ------------------------------------------------------------------ toasts
+
+	private static final class Toast {
+		private final String title;
+		private final String message;
+		private final int color;
+		private final Anim.Value life = new Anim.Value(0.0F, 6.0F);
+		private final Anim.Value slide = new Anim.Value(0.0F, 12.0F);
+		private float age;
+
+		private Toast(String title, String message, int color) {
+			this.title = title;
+			this.message = message;
+			this.color = color;
+		}
+
+		private float alpha() {
+			return Anim.clamp01(slide.get()) * life.get();
+		}
+
+		private float offset() {
+			return (1.0F - Anim.easeOutQuint(slide.get())) * 14.0F;
+		}
+
+		private void update(float deltaSeconds) {
+			age += deltaSeconds;
+			slide.set(1.0F);
+			slide.update(UiTheme.get().speed(13.0F));
+			life.set(age > 3.0F ? 0.0F : 1.0F);
+			life.update(age > 3.0F ? UiTheme.get().speed(6.0F) : 60.0F);
+		}
+
+		private boolean expired() {
+			return age > 3.6F;
+		}
+	}
+
+	/** Updates the toast stack; part of the screen's per-frame update pass. */
+	protected final void updateToasts(float deltaSeconds) {
+		for (int i = toasts.size() - 1; i >= 0; i--) {
+			Toast toast = toasts.get(i);
+			toast.update(deltaSeconds);
+			if (toast.expired()) {
+				toasts.remove(i);
+			}
+		}
+	}
+
+	/** Single entry point for the per-frame update of everything this screen owns. */
+	protected final void tickAnimations() {
+		updateModals(deltaSeconds);
+		updateContent(deltaSeconds);
+		updateToasts(deltaSeconds);
 	}
 }
 ```
@@ -5187,29 +6334,28 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.function.Consumer;
 
 import dev.chaosutils.config.ChaosConfig;
 import dev.chaosutils.config.RadialElement;
+import dev.chaosutils.config.Setting;
 import dev.chaosutils.config.Waypoint;
 import dev.chaosutils.core.ChatLog;
+import dev.chaosutils.core.Keybinds;
 import dev.chaosutils.core.Clipboard;
 import dev.chaosutils.feature.qol.ScreenshotManager;
 import dev.chaosutils.util.Anim;
-import dev.chaosutils.util.HudPos;
 import dev.chaosutils.util.Render;
-import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 
 /**
- * The smaller ChaosUtils screens: radial editor, chat history, screenshots and waypoints, plus
- * the shared text input dialog they use.
+ * The secondary ChaosUtils windows.
  *
- * <p>All of them are built from the same component toolkit as the main interface, so styling,
- * animations and input handling stay consistent and there is exactly one place to change them.
+ * <p>All four share the same shell ({@link ChaosScreen}: floating, draggable, animated) and only
+ * differ in their content, so the interface feels like one product instead of a pile of screens.
+ * Every window opens on top of the previous one and returns there when it is closed.
  */
 public final class ChaosScreens {
 	private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss", Locale.ROOT)
@@ -5218,261 +6364,188 @@ public final class ChaosScreens {
 	private ChaosScreens() {
 	}
 
-	/** A simple, modal text dialog with a vanilla text field so typing behaves as expected. */
-	public static final class TextInputScreen extends Screen {
-		private final Screen parent;
-		private final String title;
-		private final String initial;
-		private final int maxLength;
-		private final Consumer<String> onAccept;
-		private EditBox field;
-		private boolean enterHeld;
+	// ============================================================ radial editor
 
-		public TextInputScreen(Screen parent, String title, String initial, int maxLength, Consumer<String> onAccept) {
-			super(Component.literal(title));
-			this.parent = parent;
-			this.title = title;
-			this.initial = initial == null ? "" : initial;
-			this.maxLength = Math.max(1, maxLength);
-			this.onAccept = onAccept;
-		}
-
-		@Override
-		protected void init() {
-			int boxWidth = Math.min(260, this.width - 60);
-			int x = (this.width - boxWidth) / 2;
-			int y = this.height / 2 - 8;
-			field = new EditBox(this.font, x, y, boxWidth, 18, Component.literal(title));
-			field.setValue(initial);
-			field.setMaxLength(maxLength);
-			field.setBordered(true);
-			addRenderableWidget(field);
-			setInitialFocus(field);
-		}
-
-		@Override
-		public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-			UiTheme theme = UiTheme.get();
-			// Vanilla already drew the background for this frame; drawing it again would blur twice.
-			Backdrop.render(graphics, this, theme);
-			int boxWidth = Math.min(260, this.width - 60) + 16;
-			int x = (this.width - boxWidth) / 2;
-			int y = this.height / 2 - 30;
-			Render.shadowedPanel(graphics, x, y, boxWidth, 68.0F, theme.radius, theme.panel, theme.accent);
-			Render.centeredText(graphics, this.font, title, this.width * 0.5F, y + 8.0F, theme.text, false);
-			Render.centeredText(graphics, this.font, "Enter to accept  ·  Escape to cancel", this.width * 0.5F, y + 52.0F,
-					theme.textFaint, false);
-			super.render(graphics, mouseX, mouseY, partialTick);
-		}
-
-		/**
-		 * Enter is polled instead of overriding an input event method, which keeps this screen
-		 * independent of the input event record accessors introduced in 1.21.9.
-		 */
-		@Override
-		public void tick() {
-			super.tick();
-			boolean enter = dev.chaosutils.util.InputUtil.isPressed(org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER)
-					|| dev.chaosutils.util.InputUtil.isPressed(org.lwjgl.glfw.GLFW.GLFW_KEY_KP_ENTER);
-			if (enter && !enterHeld) {
-				enterHeld = true;
-				accept();
-			} else if (!enter) {
-				enterHeld = false;
-			}
-		}
-
-		@Override
-		public void onClose() {
-			if (this.minecraft != null) {
-				this.minecraft.setScreen(parent);
-			}
-		}
-
-		@Override
-		public boolean isPauseScreen() {
-			return false;
-		}
-
-		private void accept() {
-			if (onAccept != null) {
-				onAccept.accept(field == null ? "" : field.getValue());
-			}
-			if (this.minecraft != null) {
-				this.minecraft.setScreen(parent);
-			}
-		}
-	}
-
-	/** Base for the list-oriented screens: consistent frame, title and close button. */
-	abstract static class ListScreen extends ChaosScreen {
-		protected final Screen parent;
-		private final String heading;
-
-		protected ListScreen(Screen parent, String heading) {
-			super(Component.literal("ChaosUtils " + heading));
-			this.parent = parent;
-			this.heading = heading;
-		}
-
-		protected abstract void buildRows(float top, float left, float width, float rowHeight);
-
-		@Override
-		protected void buildLayout() {
-			UiTheme theme = theme();
-			float left = 18.0F;
-			float width = this.width - 36.0F;
-			float top = 46.0F;
-			float rowHeight = 20.0F;
-
-			UiWidgets.Button close = new UiWidgets.Button(this, "Back", theme.accent, this::back);
-			close.setBounds(this.width - 76.0F, this.height - 28.0F, 58.0F, 18.0F);
-			add(close);
-
-			buildRows(top, left, width, rowHeight);
-		}
-
-		protected void back() {
-			if (this.minecraft != null) {
-				this.minecraft.setScreen(parent);
-			}
-		}
-
-		@Override
-		public void onClose() {
-			back();
-		}
-
-		@Override
-		protected void renderBackdrop(GuiGraphics graphics, int mouseX, int mouseY, float deltaTicks) {
-			UiTheme theme = theme();
-			Backdrop.render(graphics, this, theme);
-			Render.shadowedPanel(graphics, 12.0F, 12.0F, this.width - 24.0F, this.height - 24.0F, theme.radius,
-					theme.panel, theme.accent);
-			Render.text(graphics, font(), heading, 20.0F, 22.0F, theme.text, false);
-			Render.text(graphics, font(), subtitle(), 20.0F, 32.0F, theme.textFaint, false);
-		}
-
-		protected String subtitle() {
-			return "Changes are saved automatically.";
-		}
-
-		@Override
-		public boolean isPauseScreen() {
-			return false;
-		}
-	}
-
-	// ------------------------------------------------------------- radial editor
-
+	/** Create, edit, reorder and preview the radial menu entries. */
 	public static final class RadialEditorScreen extends ChaosScreen {
-		private final Screen parent;
 		private int selected = -1;
+		private UiWidgets.ScrollList list;
 
 		public RadialEditorScreen(Screen parent) {
-			super(Component.literal("ChaosUtils Radial Editor"));
-			this.parent = parent;
+			super(parent, Component.literal("Radial Menu"), "window.radial", 720.0F, 430.0F);
 		}
 
 		@Override
 		protected void buildLayout() {
+			UiTheme theme = UiTheme.get();
 			List<RadialElement> entries = ChaosConfig.RADIAL_ELEMENTS;
 			if (selected >= entries.size()) {
 				selected = entries.isEmpty() ? -1 : entries.size() - 1;
 			}
-			UiTheme theme = theme();
-			float listLeft = 18.0F;
-			float listWidth = 190.0F;
-			float rowHeight = 20.0F;
-			float top = 48.0F;
-			int visible = (int) ((this.height - 110.0F) / rowHeight);
-			for (int i = 0; i < Math.min(visible, entries.size()); i++) {
-				final int index = i;
-				RadialElement element = entries.get(i);
-				UiWidgets.Button row = new UiWidgets.Button(this, element.name + "  §7" + element.type.label().split(" ")[0],
-						i == selected ? theme.accent : 0xFF3A3A48, () -> {
-							selected = index;
+			float contentX = window().x() + 18.0F;
+			float top = window().y() + window().titleHeight() + 14.0F;
+			float listWidth = 220.0F;
+
+			UiWidgets.Label entriesLabel = new UiWidgets.Label("Slices", theme.textFaint);
+			entriesLabel.setBounds(contentX, top, listWidth, 10.0F);
+			add(entriesLabel);
+
+			list = new UiWidgets.ScrollList();
+			list.setSpacing(4.0F);
+			list.setBounds(contentX, top + 14.0F, listWidth, Math.max(80.0F, window().height() - window().titleHeight() - 62.0F));
+			list.snapAppear();
+			add(list);
+			for (int i = 0; i < entries.size(); i++) {
+				EntryRow row = new EntryRow(this, entries.get(i), i);
+				row.setBounds(0.0F, 0.0F, listWidth, 30.0F);
+				list.addItem(row);
+			}
+			list.layout();
+
+			// ---- editor of the selected slice
+			float editorX = contentX + listWidth + 20.0F;
+			float editorWidth = Math.max(180.0F, window().right() - 18.0F - editorX);
+			RadialElement element = current();
+			if (element == null) {
+				UiWidgets.Label empty = new UiWidgets.Label("Select a slice on the left, or add a new one.",
+						theme.textDim);
+				empty.setBounds(editorX, top + 20.0F, editorWidth, 12.0F);
+				add(empty);
+			} else {
+				float previewHeight = 150.0F;
+				RingPreview preview = new RingPreview();
+				preview.setBounds(editorX, top, editorWidth, previewHeight);
+				add(preview);
+
+				float rowY = top + previewHeight + 6.0F;
+				add(fieldRow(element, "Name", element.name, editorX, rowY, editorWidth, () ->
+						openTextModal("Display name", element.name, 48, value -> {
+							element.name = value;
+							ChaosConfig.markDirty();
+							refresh();
+						})));
+				rowY += 24.0F;
+				add(fieldRow(element, "Action", element.command, editorX, rowY, editorWidth, () ->
+						openTextModal(element.type == RadialElement.ActionType.COPY_TEXT
+								? "Text to copy" : "Command or chat text", element.command, 256, value -> {
+							element.command = value;
+							ChaosConfig.markDirty();
+							refresh();
+						})));
+				rowY += 24.0F;
+
+				UiWidgets.Button type = new UiWidgets.Button(element.type.label(),
+						UiWidgets.Button.Variant.SOFT, element.solidColor(), () -> {
+							RadialElement.ActionType[] types = RadialElement.ActionType.values();
+							element.type = types[(element.type.ordinal() + 1) % types.length];
+							ChaosConfig.markDirty();
 							refresh();
 						});
-				row.setBounds(listLeft, top + i * rowHeight, listWidth, rowHeight - 3.0F);
-				add(row);
+				type.setLeftAligned(true);
+				type.setBounds(editorX, rowY, editorWidth, 18.0F);
+				type.setTooltip("Click to switch what this slice does.");
+				add(type);
+				rowY += 24.0F;
+
+				UiWidgets.Button icon = new UiWidgets.Button("Icon: " + element.icon,
+						UiWidgets.Button.Variant.SOFT, element.solidColor(), () ->
+						openTextModal("Item id", element.icon, 64, value -> {
+							element.icon = value;
+							ChaosConfig.markDirty();
+							refresh();
+						}));
+				icon.setLeftAligned(true);
+				icon.setIcon(element.iconStack());
+				icon.setBounds(editorX, rowY, editorWidth, 18.0F);
+				icon.setTooltip("Any item id, for example minecraft:compass.");
+				add(icon);
+				rowY += 24.0F;
+
+				UiWidgets.Button colour = new UiWidgets.Button("Colour  " + String.format("#%06X", element.color & 0xFFFFFF),
+						UiWidgets.Button.Variant.SOFT, element.solidColor(), () -> {
+							Setting.Color temporary = new Setting.Color("radial_colour", "Slice colour",
+									"Colour of this radial slice.", element.color);
+							temporary.onChanged(value -> {
+								element.color = value;
+								ChaosConfig.markDirty();
+							});
+							openColorModal(temporary);
+						});
+				colour.setLeftAligned(true);
+				colour.setBounds(editorX, rowY, editorWidth, 18.0F);
+				add(colour);
+				rowY += 22.0F;
+
+				UiWidgets.Toggle enabled = new UiWidgets.Toggle(() -> element.enabled, value -> {
+					element.enabled = value;
+					ChaosConfig.markDirty();
+					refresh();
+				}, theme.accent);
+				enabled.setBounds(editorX + editorWidth - 34.0F, rowY, 30.0F, 16.0F);
+				enabled.setTooltip("Hide a slice without deleting it.");
+				add(enabled);
+				UiWidgets.Label enabledLabel = new UiWidgets.Label("Visible in the menu", theme.textDim);
+				enabledLabel.setBounds(editorX, rowY, editorWidth - 40.0F, 12.0F);
+				add(enabledLabel);
 			}
 
-			float buttonsY = this.height - 58.0F;
-			UiWidgets.Button add = new UiWidgets.Button(this, "Add", theme.positive, () -> {
-				ChaosConfig.RADIAL_ELEMENTS.add(new RadialElement("New Action", "/spawn", theme.accent,
+			// ---- bottom bar
+			float bottom = window().bottom() - 30.0F;
+			UiWidgets.Button add = new UiWidgets.Button("Add slice", UiWidgets.Button.Variant.PRIMARY, theme.accent, () -> {
+				ChaosConfig.RADIAL_ELEMENTS.add(new RadialElement("New action", "/spawn", theme.accent,
 						"minecraft:compass", RadialElement.ActionType.COMMAND));
 				ChaosConfig.markDirty();
 				selected = ChaosConfig.RADIAL_ELEMENTS.size() - 1;
 				refresh();
+				toast("Slice added");
 			});
-			add.setBounds(listLeft, buttonsY, 60.0F, 18.0F);
+			add.setBounds(contentX, bottom, 90.0F, 20.0F);
 			add(add);
 
-			UiWidgets.Button duplicate = new UiWidgets.Button(this, "Copy", theme.accent, () -> {
+			UiWidgets.Button duplicate = new UiWidgets.Button("Duplicate", UiWidgets.Button.Variant.SOFT, theme.accent, () -> {
 				RadialElement element = current();
 				if (element != null) {
 					ChaosConfig.RADIAL_ELEMENTS.add(element.copy());
 					ChaosConfig.markDirty();
+					selected = ChaosConfig.RADIAL_ELEMENTS.size() - 1;
 					refresh();
 				}
 			});
-			duplicate.setBounds(listLeft + 64.0F, buttonsY, 60.0F, 18.0F);
+			duplicate.setBounds(contentX + 96.0F, bottom, 82.0F, 20.0F);
 			add(duplicate);
 
-			UiWidgets.Button delete = new UiWidgets.Button(this, "Delete", theme.negative, () -> {
+			UiWidgets.Button delete = new UiWidgets.Button("Delete", UiWidgets.Button.Variant.DANGER, theme.negative, () -> {
 				RadialElement element = current();
 				if (element != null) {
-					ChaosConfig.RADIAL_ELEMENTS.remove(element);
-					ChaosConfig.markDirty();
-					selected = Math.max(-1, Math.min(selected, ChaosConfig.RADIAL_ELEMENTS.size() - 1));
-					refresh();
+					openConfirm("Delete slice", "Remove \"" + element.name + "\" from the radial menu?", "Delete", () -> {
+						ChaosConfig.RADIAL_ELEMENTS.remove(element);
+						ChaosConfig.markDirty();
+						selected = Math.max(0, Math.min(selected, ChaosConfig.RADIAL_ELEMENTS.size() - 1));
+						refresh();
+					});
 				}
 			});
-			delete.setBounds(listLeft + 128.0F, buttonsY, 60.0F, 18.0F);
+			delete.setBounds(contentX + 184.0F, bottom, 74.0F, 20.0F);
 			add(delete);
-
-			UiWidgets.Button moveUp = new UiWidgets.Button(this, "↑", 0xFF3A3A48, () -> move(-1));
-			moveUp.setBounds(listLeft, buttonsY - 22.0F, 28.0F, 18.0F);
-			add(moveUp);
-
-			UiWidgets.Button moveDown = new UiWidgets.Button(this, "↓", 0xFF3A3A48, () -> move(1));
-			moveDown.setBounds(listLeft + 32.0F, buttonsY - 22.0F, 28.0F, 18.0F);
-			add(moveDown);
-
-			UiWidgets.Button back = new UiWidgets.Button(this, "Back", theme.accent, () -> {
-				if (this.minecraft != null) {
-					this.minecraft.setScreen(parent);
-				}
-			});
-			back.setBounds(this.width - 76.0F, this.height - 28.0F, 58.0F, 18.0F);
-			add(back);
-
-			buildEditor(listLeft + listWidth + 14.0F, 48.0F, this.width - listLeft - listWidth - 32.0F);
 		}
 
-		private void refresh() {
-			if (this.minecraft != null) {
-				this.minecraft.setScreen(new RadialEditorScreen(parent));
-			}
+		@Override
+		protected void renderHeader(GuiGraphics graphics, float alpha) {
+			UiTheme theme = theme();
+			Render.boldText(graphics, UiWidgets.font(), "Radial Menu", window().x() + 16.0F, window().y() + 13.0F,
+					Render.alpha(theme.text, alpha), false);
+			String subtitle = ChaosConfig.RADIAL_ELEMENTS.size() + " slices  ·  hold " + radialKeyName() + " in game";
+			Render.text(graphics, UiWidgets.font(), subtitle, window().right() - 16.0F - UiWidgets.font().width(subtitle),
+					window().y() + 13.0F, Render.alpha(theme.textFaint, alpha), false);
 		}
 
-		private void move(int direction) {
-			RadialElement element = current();
-			if (element == null) {
-				return;
+		/** The key the player bound to the radial menu, as a readable name. */
+		private static String radialKeyName() {
+			try {
+				return Keybinds.radialMenu.getTranslatedKeyMessage().getString();
+			} catch (Throwable ignored) {
+				return "the radial key";
 			}
-			List<RadialElement> entries = ChaosConfig.RADIAL_ELEMENTS;
-			int index = entries.indexOf(element);
-			int target = index + direction;
-			if (target < 0 || target >= entries.size()) {
-				return;
-			}
-			entries.set(index, entries.get(target));
-			entries.set(target, element);
-			selected = target;
-			ChaosConfig.markDirty();
-			refresh();
 		}
 
 		private RadialElement current() {
@@ -5480,429 +6553,631 @@ public final class ChaosScreens {
 			return selected >= 0 && selected < entries.size() ? entries.get(selected) : null;
 		}
 
-		private void buildEditor(float left, float top, float width) {
-			RadialElement element = current();
-			float rowHeight = 22.0F;
-			UiTheme theme = theme();
-			if (element == null) {
+		private UiComponent fieldRow(RadialElement element, String label, String value, float x, float y, float width,
+				Runnable onEdit) {
+			UiWidgets.Button button = new UiWidgets.Button(label + ":  " + Render.ellipsize(UiWidgets.font(), value, width - 90.0F),
+					UiWidgets.Button.Variant.SOFT, element.solidColor(), onEdit);
+			button.setLeftAligned(true);
+			button.setBounds(x, y, width, 18.0F);
+			return button;
+		}
+
+		private void move(int index, int direction) {
+			List<RadialElement> entries = ChaosConfig.RADIAL_ELEMENTS;
+			int target = index + direction;
+			if (index < 0 || index >= entries.size() || target < 0 || target >= entries.size()) {
 				return;
 			}
-			int row = 0;
-			add(valueRow(left, top + row++ * rowHeight, width, "Name", element.name, theme.accent, () ->
-					openText("Display name", element.name, 48, value -> {
-						element.name = value;
-						ChaosConfig.markDirty();
-						refresh();
-					}), null));
-			add(valueRow(left, top + row++ * rowHeight, width, "Command", element.command, theme.accent, () ->
-					openText(element.type == RadialElement.ActionType.COPY_TEXT ? "Text to copy" : "Command or text",
-							element.command, 256, value -> {
-								element.command = value;
-								ChaosConfig.markDirty();
-								refresh();
-							}), null));
-			add(valueRow(left, top + row++ * rowHeight, width, "Action", element.type.label(), theme.accent,
-					() -> {
-						RadialElement.ActionType[] types = RadialElement.ActionType.values();
-						element.type = types[(element.type.ordinal() + 1) % types.length];
-						ChaosConfig.markDirty();
-						refresh();
-					}, null));
-			add(valueRow(left, top + row++ * rowHeight, width, "Icon", element.icon, theme.accent, () ->
-					openText("Item id", element.icon, 64, value -> {
-						element.icon = value;
-						ChaosConfig.markDirty();
-						refresh();
-					}), null));
-			add(valueRow(left, top + row++ * rowHeight, width, "Colour", String.format("#%06X", element.color & 0xFFFFFF),
-					element.color, () -> {
-						int[] palette = {0xFFFF8A65, 0xFF7C5CFF, 0xFF4FC3F7, 0xFF81C784, 0xFFF0B429, 0xFFF06292,
-								0xFF64B5F6, 0xFF4DB6AC};
-						int index = 0;
-						for (int i = 0; i < palette.length; i++) {
-							if (palette[i] == element.color) {
-								index = (i + 1) % palette.length;
-								break;
-							}
-						}
-						element.color = palette[index];
-						ChaosConfig.markDirty();
-						refresh();
-					}, () -> openPicker(element)));
-			add(valueRow(left, top + row++ * rowHeight, width, "Enabled", element.enabled ? "yes" : "no",
-					element.enabled ? theme.positive : theme.negative, () -> {
-						element.enabled = !element.enabled;
-						ChaosConfig.markDirty();
-						refresh();
-					}, null));
-			add(valueRow(left, top + row++ * rowHeight, width, "Slice", (selected + 1) + " of "
-					+ ChaosConfig.RADIAL_ELEMENTS.size(), theme.textFaint, null, null));
+			RadialElement element = entries.get(index);
+			entries.set(index, entries.get(target));
+			entries.set(target, element);
+			selected = target;
+			ChaosConfig.markDirty();
+			refresh();
 		}
 
-		private UiComponent valueRow(float x, float y, float width, String label, String value, int accent,
-				Runnable onLeft, Runnable onRight) {
-			ValueRow row = new ValueRow(label, value, accent, onLeft, onRight);
-			row.setBounds(x, y, width, 18.0F);
-			return row;
-		}
-
-		private void openText(String title, String initial, int maxLength, Consumer<String> onAccept) {
-			if (this.minecraft != null) {
-				this.minecraft.setScreen(new TextInputScreen(this, title, initial, maxLength, onAccept));
+		private static String keyName(net.minecraft.client.KeyMapping mapping) {
+			try {
+				return mapping.getTranslatedKeyMessage().getString();
+			} catch (Throwable ignored) {
+				return "the radial key";
 			}
 		}
 
-		private void openPicker(RadialElement element) {
-			dev.chaosutils.config.Setting.Color temporary =
-					new dev.chaosutils.config.Setting.Color("radial_colour", "Slice colour", "", element.color);
-			temporary.onChanged(value -> {
-				element.color = value;
-				ChaosConfig.markDirty();
-			});
-			openColorPicker(temporary);
+		/** One row in the slice list: colour dot, name, action type and reorder buttons. */
+		private static final class EntryRow extends UiComponent {
+			private final RadialEditorScreen screen;
+			private final RadialElement element;
+			private final int index;
+			private final UiWidgets.IconButton up;
+			private final UiWidgets.IconButton down;
+
+			private EntryRow(RadialEditorScreen screen, RadialElement element, int index) {
+				this.screen = screen;
+				this.element = element;
+				this.index = index;
+				this.up = new UiWidgets.IconButton(
+						(graphics, cx, cy, alpha) -> Ui.chevron(graphics, cx, cy, 5.0F, -90.0F,
+								Render.alpha(0xFFFFFF, alpha)), 0xFFFFFFFF, () -> screen.move(index, -1));
+				this.down = new UiWidgets.IconButton(
+						(graphics, cx, cy, alpha) -> Ui.chevron(graphics, cx, cy, 5.0F, 90.0F,
+								Render.alpha(0xFFFFFF, alpha)), 0xFFFFFFFF, () -> screen.move(index, 1));
+				this.setTooltip(element.type.label());
+				this.setAppearDelay(Math.min(0.2F, 0.02F * index));
+			}
+
+			@Override
+			public void update(float deltaSeconds, float mouseX, float mouseY) {
+				super.update(deltaSeconds, mouseX, mouseY);
+				up.setBounds(right() - 42.0F, y + (height - 14.0F) * 0.5F, 14.0F, 14.0F);
+				down.setBounds(right() - 24.0F, y + (height - 14.0F) * 0.5F, 14.0F, 14.0F);
+				up.setLayerAlpha(layerAlpha);
+				down.setLayerAlpha(layerAlpha);
+				up.update(deltaSeconds, mouseX, mouseY);
+				down.update(deltaSeconds, mouseX, mouseY);
+			}
+
+			@Override
+			public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+				float alpha = alpha();
+				if (alpha <= 0.01F) {
+					return;
+				}
+				UiTheme theme = UiTheme.get();
+				float offset = appearOffset();
+				boolean active = screen.selected == index;
+				Render.roundedRect(graphics, x, y + offset, width, height, 8.0F,
+						Render.mix(Render.alpha(0xFFFFFF, active ? 0.07F : 0.03F * alpha),
+								Render.alpha(0xFFFFFF, 0.08F * alpha), hover.get()));
+				if (active) {
+					Render.ring(graphics, x, y + offset, width, height, 8.0F, 1.0F,
+							Render.alpha(element.solidColor(), alpha * 0.55F));
+				}
+				Ui.dot(graphics, x + 10.0F, y + offset + 11.0F, 3.5F,
+						Render.alpha(element.enabled ? element.solidColor() : theme.textFaint, alpha));
+				Render.text(graphics, UiWidgets.font(), Render.ellipsize(UiWidgets.font(), element.name, width - 60.0F),
+						x + 18.0F, y + offset + 4.0F, Render.alpha(theme.text, alpha), false);
+				Render.text(graphics, UiWidgets.font(), element.type.label(), x + 18.0F, y + offset + 15.0F,
+						Render.alpha(theme.textFaint, alpha), false);
+				up.render(graphics, mouseX, mouseY, deltaSeconds);
+				down.render(graphics, mouseX, mouseY, deltaSeconds);
+			}
+
+			@Override
+			public boolean mouseClicked(float mouseX, float mouseY, int button) {
+				if (!isHovered(mouseX, mouseY)) {
+					return false;
+				}
+				if (up.mouseClicked(mouseX, mouseY, button)) {
+					return true;
+				}
+				if (down.mouseClicked(mouseX, mouseY, button)) {
+					return true;
+				}
+				if (button == 0) {
+					screen.selected = index;
+					screen.playClick(true);
+					screen.refresh();
+					return true;
+				}
+				return false;
+			}
 		}
 
-		@Override
-		protected void renderBackdrop(GuiGraphics graphics, int mouseX, int mouseY, float deltaTicks) {
-			UiTheme theme = theme();
-			Backdrop.render(graphics, this, theme);
-			Render.shadowedPanel(graphics, 12.0F, 12.0F, this.width - 24.0F, this.height - 24.0F, theme.radius,
-					theme.panel, theme.accent);
-			Render.text(graphics, font(), "Radial Menu", 20.0F, 22.0F, theme.text, false);
-			Render.text(graphics, font(), "Click a slice to edit it · " + ChaosConfig.RADIAL_ELEMENTS.size() + " entries",
-					20.0F, 32.0F, theme.textFaint, false);
-		}
+		/** Live preview of the ring with the real geometry of the menu. */
+		private final class RingPreview extends UiComponent {
+			private final Anim.Value spin = new Anim.Value(0.0F, 0.4F);
 
-		@Override
-		public boolean isPauseScreen() {
-			return false;
+			@Override
+			public void update(float deltaSeconds, float mouseX, float mouseY) {
+				super.update(deltaSeconds, mouseX, mouseY);
+				spin.set(spin.target() + deltaSeconds * 4.0F);
+				spin.update(UiTheme.get().speed(0.6F));
+			}
+
+			@Override
+			public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+				float alpha = alpha();
+				if (alpha <= 0.01F) {
+					return;
+				}
+				List<RadialElement> entries = ChaosConfig.RADIAL_ELEMENTS;
+				float cx = centerX();
+				float cy = centerY();
+				float outer = Math.min(width, height) * 0.42F;
+				float inner = outer * 0.42F;
+				Render.roundedRect(graphics, x, y, width, height, UiTheme.get().radiusCard,
+						Render.alpha(0x000000, 0.20F * alpha));
+				UiTheme theme = UiTheme.get();
+				if (entries.isEmpty()) {
+					Render.centeredText(graphics, UiWidgets.font(), "No slices yet", cx, cy - 4.0F,
+							Render.alpha(theme.textFaint, alpha), false);
+					return;
+				}
+				float span = 360.0F / entries.size();
+				float gap = Math.min(5.0F, span * 0.2F);
+				for (int i = 0; i < entries.size(); i++) {
+					RadialElement element = entries.get(i);
+					float start = i * span - span * 0.5F + gap;
+					float end = (i + 1) * span - span * 0.5F - gap;
+					boolean active = selected == i;
+					Render.arc(graphics, cx, cy, inner, active ? outer + 4.0F : outer, start, end,
+							Render.alpha(element.solidColor(), (element.enabled ? 0.85F : 0.30F) * alpha));
+					double mid = Math.toRadians((start + end) * 0.5);
+					float radius = inner + (outer - inner) * 0.55F;
+					float iconX = cx + (float) Math.sin(mid) * radius;
+					float iconY = cy - (float) Math.cos(mid) * radius;
+					Ui.itemIcon(graphics, element.iconStack(), iconX, iconY, 0.75F, alpha);
+				}
+				Render.circle(graphics, cx, cy, inner - 5.0F, Render.alpha(0x0C0D14, 0.8F * alpha));
+				Render.ring(graphics, cx - inner + 5.0F, cy - inner + 5.0F, (inner - 5.0F) * 2.0F, (inner - 5.0F) * 2.0F,
+						inner - 5.0F, 1.2F, Render.alpha(0x66FFFFFF, alpha * 0.6F));
+				Render.centeredText(graphics, UiWidgets.font(), "preview", cx, cy - 4.0F,
+						Render.alpha(theme.textFaint, alpha * 0.8F), false);
+			}
 		}
 	}
 
-	// ------------------------------------------------------------- chat history
+	// =============================================================== chat log
 
-	public static final class ChatHistoryScreen extends ListScreen {
+	/** Searchable history of everything that happened in chat. */
+	public static final class ChatHistoryScreen extends ChaosScreen {
 		private String query = "";
-		private EditBox search;
-		private final List<ChatLog.Entry> visible = new ArrayList<>();
+		private int kindFilter = 0;
+		private UiWidgets.ScrollList list;
+		private UiWidgets.Label countLabel;
+		private UiWidgets.SearchField search;
 
 		public ChatHistoryScreen(Screen parent) {
-			super(parent, "Chat History");
+			super(parent, Component.literal("Chat History"), "window.chat", 640.0F, 420.0F);
 		}
 
 		@Override
-		protected String subtitle() {
-			return ChatLog.recent(400).size() + " buffered lines · click a line to copy it";
-		}
+		protected void buildLayout() {
+			UiTheme theme = UiTheme.get();
+			float contentX = window().x() + 18.0F;
+			float contentWidth = window().width() - 36.0F;
+			float top = window().y() + window().titleHeight() + 14.0F;
 
-		@Override
-		protected void buildRows(float top, float left, float width, float rowHeight) {
-			UiTheme theme = theme();
-			refreshEntries();
-			int visibleRows = (int) ((this.height - top - 70.0F) / rowHeight);
-			for (int i = 0; i < Math.min(visibleRows, visible.size()); i++) {
-				ChatLog.Entry entry = visible.get(i);
-				String text = "§7[" + TIME.format(entry.time()) + "] §r" + entry.plain();
-				ChatLog.Entry captured = entry;
-				UiWidgets.Button row = new UiWidgets.Button(this, trim(text, width - 20.0F), 0xFF3A3A48,
-						() -> Clipboard.copyText(captured.plain()));
-				row.setBounds(left, top + i * rowHeight, width, rowHeight - 3.0F);
-				add(row);
-			}
-			search = new EditBox(this.font, Math.round(left), Math.round(top - 24.0F), Math.round(Math.min(220.0F, width)),
-					16, Component.literal("Search"));
-			search.setValue(query);
-			search.setResponder(value -> {
-				query = value;
-				refresh();
-			});
-			addInput(search);
-
-			UiWidgets.Button copyAll = new UiWidgets.Button(this, "Copy all", theme.accent, () -> {
-				StringBuilder builder = new StringBuilder();
-				for (ChatLog.Entry entry : visible) {
-					builder.append('[').append(TIME.format(entry.time())).append("] ").append(entry.plain()).append('\n');
+			EditBox box = new EditBox(UiWidgets.font(), 0, 0, 200, 14, Component.literal("Search"));
+			box.setBordered(false);
+			box.setTextColor(0xFFF4F5FA);
+			box.setHint(Component.literal("Search chat…"));
+			box.setMaxLength(64);
+			box.setValue(query);
+			box.setResponder(value -> {
+				if (!value.equals(query)) {
+					query = value;
+					rebuild();
 				}
-				Clipboard.copyText(builder.toString());
 			});
-			copyAll.setBounds(left, this.height - 28.0F, 70.0F, 18.0F);
+			addInput(box);
+			search = new UiWidgets.SearchField(box);
+			search.place(contentX, top, Math.min(240.0F, contentWidth * 0.45F), 22.0F);
+			search.setOnClear(() -> {
+				query = "";
+				rebuild();
+			});
+			add(search);
+
+			String[] filters = {"All", "Chat", "Server", "System"};
+			float chipX = search.right() + 10.0F;
+			for (int i = 0; i < filters.length; i++) {
+				int index = i;
+				int width = UiWidgets.font().width(filters[i]) + 18;
+				UiWidgets.Button chip = new UiWidgets.Button(filters[i],
+						kindFilter == index ? UiWidgets.Button.Variant.PRIMARY : UiWidgets.Button.Variant.GHOST,
+						theme.accent, () -> {
+							kindFilter = index;
+							rebuild();
+						});
+				chip.setBounds(chipX, top, width, 22.0F);
+				add(chip);
+				chipX += width + 6.0F;
+			}
+
+			countLabel = new UiWidgets.Label("", theme.textFaint);
+			countLabel.setBounds(chipX + 6.0F, top + 7.0F, Math.max(10.0F, window().right() - 18.0F - chipX), 12.0F);
+			add(countLabel);
+
+			list = new UiWidgets.ScrollList();
+			list.setSpacing(2.0F);
+			list.setBounds(contentX, top + 30.0F, contentWidth, Math.max(80.0F, window().height() - window().titleHeight() - 76.0F));
+			list.snapAppear();
+			add(list);
+			rebuildList();
+
+			float bottom = window().bottom() - 30.0F;
+			UiWidgets.Button copyAll = new UiWidgets.Button("Copy everything", UiWidgets.Button.Variant.SOFT, theme.accent, () -> {
+				this.minecraft.keyboardHandler.setClipboard(allText());
+				toast("Copied", entries().size() + " lines", theme.accent);
+			});
+			copyAll.setBounds(contentX, bottom, 110.0F, 20.0F);
 			add(copyAll);
 
-			UiWidgets.Button clear = new UiWidgets.Button(this, "Clear", theme.negative, () -> {
-				ChatLog.clear();
-				refresh();
-			});
-			clear.setBounds(left + 76.0F, this.height - 28.0F, 60.0F, 18.0F);
+			UiWidgets.Button clear = new UiWidgets.Button("Clear", UiWidgets.Button.Variant.DANGER, theme.negative, () ->
+					openConfirm("Clear chat history", "Delete every stored chat line? This cannot be undone.",
+							"Clear", () -> {
+								ChatLog.clear();
+								rebuild();
+								toast("Chat history cleared");
+							}));
+			clear.setBounds(contentX + 116.0F, bottom, 70.0F, 20.0F);
 			add(clear);
 		}
 
-		private void refreshEntries() {
-			visible.clear();
-			visible.addAll(query == null || query.isBlank() ? ChatLog.recent(200) : ChatLog.search(query, null, 200));
+		private ChatLog.Kind filter() {
+			return switch (kindFilter) {
+				case 1 -> ChatLog.Kind.PLAYER;
+				case 2 -> ChatLog.Kind.SERVER;
+				case 3 -> ChatLog.Kind.SYSTEM;
+				default -> null;
+			};
 		}
 
-		private void refresh() {
-			if (this.minecraft != null) {
-				this.minecraft.setScreen(new ChatHistoryScreen(parent));
+		private List<ChatLog.Entry> entries() {
+			return ChatLog.search(query, filter(), 200);
+		}
+
+		private void rebuild() {
+			if (list == null) {
+				return;
+			}
+			rebuildList();
+		}
+
+		private void rebuildList() {
+			list.clearItems();
+			for (ChatLog.Entry entry : entries()) {
+				list.addItem(new ChatRow(entry));
+			}
+			list.layout();
+			if (countLabel != null) {
+				countLabel.setText(entries().size() + " lines");
 			}
 		}
 
-		private String trim(String value, float maxWidth) {
-			String result = value;
-			while (font().width(result) > maxWidth && result.length() > 6) {
-				result = result.substring(0, result.length() - 2) + "…";
+		private String allText() {
+			StringBuilder builder = new StringBuilder();
+			for (ChatLog.Entry entry : entries()) {
+				builder.append('[').append(TIME.format(entry.time())).append("] ").append(entry.plain()).append('\n');
 			}
-			return result;
+			return builder.toString();
+		}
+
+		@Override
+		protected void renderHeader(GuiGraphics graphics, float alpha) {
+			UiTheme theme = theme();
+			Render.boldText(graphics, UiWidgets.font(), "Chat History", window().x() + 16.0F, window().y() + 13.0F,
+					Render.alpha(theme.text, alpha), false);
+			String subtitle = "survives reconnects  ·  stored locally";
+			Render.text(graphics, UiWidgets.font(), subtitle, window().right() - 16.0F - UiWidgets.font().width(subtitle),
+					window().y() + 13.0F, Render.alpha(theme.textFaint, alpha), false);
+		}
+
+		/** One chat line with kind badge, timestamp and a copy action. */
+		private final class ChatRow extends UiComponent {
+			private final ChatLog.Entry entry;
+
+			private ChatRow(ChatLog.Entry entry) {
+				this.entry = entry;
+				this.setTooltip("Click to copy this line");
+			}
+
+			@Override
+			public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+				float alpha = alpha();
+				if (alpha <= 0.01F) {
+					return;
+				}
+				UiTheme theme = UiTheme.get();
+				float offset = appearOffset();
+				int accent = switch (entry.kind()) {
+					case PLAYER -> 0xFF57D98A;
+					case SERVER -> 0xFFF2B23E;
+					case SYSTEM -> 0xFF7C9CFF;
+				};
+				Render.roundedRect(graphics, x, y + offset, width, height, 6.0F,
+						Render.mix(Render.alpha(0xFFFFFF, 0.0F), Render.alpha(0xFFFFFF, 0.055F * alpha), hover.get()));
+				Render.text(graphics, UiWidgets.font(), TIME.format(entry.time()), x + 4.0F, y + offset + 3.0F,
+						Render.alpha(theme.textFaint, alpha), false);
+				Ui.dot(graphics, x + 52.0F, y + offset + 7.0F, 2.5F, Render.alpha(accent, alpha));
+				Render.text(graphics, UiWidgets.font(),
+						Render.ellipsize(UiWidgets.font(), entry.plain(), width - 68.0F), x + 60.0F, y + offset + 3.0F,
+						Render.alpha(theme.text, alpha), false);
+			}
+
+			@Override
+			public boolean mouseClicked(float mouseX, float mouseY, int button) {
+				if (isHovered(mouseX, mouseY) && button == 0) {
+					Clipboard.copyText(entry.plain());
+					playClick(true);
+					toast("Copied", "chat line", theme().accent);
+					return true;
+				}
+				return false;
+			}
 		}
 	}
 
-	// --------------------------------------------------------------- screenshots
+	// ============================================================ screenshots
 
-	public static final class ScreenshotScreen extends ListScreen {
-		private int selected;
+	/** Local screenshot manager: browse, copy, crop. Nothing ever leaves the machine. */
+	public static final class ScreenshotScreen extends ChaosScreen {
 		private final List<Path> files = new ArrayList<>();
+		private int selected;
+		private UiWidgets.ScrollList list;
+		private UiWidgets.Label info;
 
 		public ScreenshotScreen(Screen parent) {
-			super(parent, "Screenshots");
+			super(parent, Component.literal("Screenshots"), "window.shots", 620.0F, 420.0F);
 		}
 
 		@Override
-		protected String subtitle() {
-			return "Everything happens locally - nothing is uploaded.";
-		}
+		protected void buildLayout() {
+			UiTheme theme = UiTheme.get();
+			float contentX = window().x() + 18.0F;
+			float contentWidth = window().width() - 36.0F;
+			float top = window().y() + window().titleHeight() + 14.0F;
 
-		@Override
-		protected void buildRows(float top, float left, float width, float rowHeight) {
-			UiTheme theme = theme();
 			files.clear();
-			files.addAll(ScreenshotManager.recent(16));
-			int visibleRows = (int) ((this.height - top - 90.0F) / rowHeight);
-			for (int i = 0; i < Math.min(visibleRows, files.size()); i++) {
-				final int index = i;
-				Path path = files.get(i);
-				String name = path.getFileName().toString();
-				String stamp = TIME.format(Instant.ofEpochMilli(path.toFile().lastModified()));
-				String label = (i == selected ? "§f" : "§7") + stamp + "  §r" + name;
-				UiWidgets.Button row = new UiWidgets.Button(this, label, i == selected ? theme.accent : 0xFF3A3A48,
-						() -> {
-							selected = index;
-							refresh();
-						});
-				row.setBounds(left, top + i * rowHeight, width, rowHeight - 3.0F);
-				add(row);
+			files.addAll(ScreenshotManager.recent(50));
+
+			list = new UiWidgets.ScrollList();
+			list.setSpacing(2.0F);
+			list.setBounds(contentX, top + 14.0F, contentWidth, Math.max(80.0F, window().height() - window().titleHeight() - 78.0F));
+			list.snapAppear();
+			add(list);
+			for (int i = 0; i < files.size(); i++) {
+				list.addItem(new ShotRow(i));
+			}
+			list.layout();
+
+			if (selected >= files.size()) {
+				selected = Math.max(0, files.size() - 1);
 			}
 
-			float buttonsY = this.height - 28.0F;
-			UiWidgets.Button copyImage = new UiWidgets.Button(this, "Copy image", theme.accent, () -> {
-				Path path = currentPath();
+			info = new UiWidgets.Label(currentName(), theme.textDim);
+			info.setBounds(contentX, top, contentWidth, 12.0F);
+			add(info);
+
+			float bottom = window().bottom() - 30.0F;
+			UiWidgets.Button copyImage = new UiWidgets.Button("Copy image", UiWidgets.Button.Variant.PRIMARY, theme.accent, () -> {
+				Path path = current();
 				if (path != null) {
 					Clipboard.copyImage(path);
+					toast("Screenshot copied to the clipboard");
 				}
 			});
-			copyImage.setBounds(left, buttonsY, 78.0F, 18.0F);
+			copyImage.setBounds(contentX, bottom, 96.0F, 20.0F);
 			add(copyImage);
 
-			UiWidgets.Button copyPath = new UiWidgets.Button(this, "Copy path", 0xFF4FC3F7, () -> {
-				Path path = currentPath();
-				if (path != null) {
-					Clipboard.copyText(path.toAbsolutePath().toString());
-				}
-			});
-			copyPath.setBounds(left + 84.0F, buttonsY, 74.0F, 18.0F);
-			add(copyPath);
-
-			UiWidgets.Button crop = new UiWidgets.Button(this, "Crop & copy", theme.warning, () -> {
-				Path path = currentPath();
+			UiWidgets.Button crop = new UiWidgets.Button("Crop & copy", UiWidgets.Button.Variant.SOFT, theme.warning, () -> {
+				Path path = current();
 				if (path != null) {
 					ScreenshotManager.cropWithConfiguredPreset(path);
+					toast("Cropped and copied");
 				}
 			});
-			crop.setBounds(left + 164.0F, buttonsY, 86.0F, 18.0F);
+			crop.setBounds(contentX + 102.0F, bottom, 96.0F, 20.0F);
+			crop.setTooltip("Uses the crop preset from the Screenshot Manager settings.");
 			add(crop);
 
-			UiWidgets.Button openFolder = new UiWidgets.Button(this, "Open folder", 0xFF81C784, () ->
+			UiWidgets.Button copyPath = new UiWidgets.Button("Copy path", UiWidgets.Button.Variant.GHOST, theme.accent, () -> {
+				Path path = current();
+				if (path != null) {
+					Clipboard.copyText(path.toAbsolutePath().toString());
+					toast("Path copied");
+				}
+			});
+			copyPath.setBounds(contentX + 204.0F, bottom, 84.0F, 20.0F);
+			add(copyPath);
+
+			UiWidgets.Button folder = new UiWidgets.Button("Open folder", UiWidgets.Button.Variant.GHOST, theme.positive, () ->
 					Clipboard.openFile(ScreenshotManager.screenshotsDirectory()));
-			openFolder.setBounds(left + 256.0F, buttonsY, 86.0F, 18.0F);
-			add(openFolder);
+			folder.setBounds(contentX + 294.0F, bottom, 92.0F, 20.0F);
+			add(folder);
 		}
 
-		private Path currentPath() {
+		private Path current() {
 			return selected >= 0 && selected < files.size() ? files.get(selected) : null;
 		}
 
-		private void refresh() {
-			if (this.minecraft != null) {
-				this.minecraft.setScreen(new ScreenshotScreen(parent));
+		private String currentName() {
+			Path path = current();
+			return path == null ? "No screenshots found yet" : path.getFileName().toString();
+		}
+
+		@Override
+		protected void renderHeader(GuiGraphics graphics, float alpha) {
+			UiTheme theme = theme();
+			Render.boldText(graphics, UiWidgets.font(), "Screenshots", window().x() + 16.0F, window().y() + 13.0F,
+					Render.alpha(theme.text, alpha), false);
+			String subtitle = "everything stays on this machine";
+			Render.text(graphics, UiWidgets.font(), subtitle, window().right() - 16.0F - UiWidgets.font().width(subtitle),
+					window().y() + 13.0F, Render.alpha(theme.textFaint, alpha), false);
+		}
+
+		private final class ShotRow extends UiComponent {
+			private final int index;
+
+			private ShotRow(int index) {
+				this.index = index;
+				this.setTooltip(files.get(index).toAbsolutePath().toString());
+			}
+
+			@Override
+			public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+				float alpha = alpha();
+				if (alpha <= 0.01F) {
+					return;
+				}
+				UiTheme theme = UiTheme.get();
+				Path path = files.get(index);
+				boolean active = selected == index;
+				float offset = appearOffset();
+				Render.roundedRect(graphics, x, y + offset, width, height, 6.0F,
+						Render.mix(Render.alpha(0xFFFFFF, active ? 0.07F : 0.02F * alpha),
+								Render.alpha(0xFFFFFF, 0.07F * alpha), hover.get()));
+				String stamp = TIME.format(Instant.ofEpochMilli(path.toFile().lastModified()));
+				Render.text(graphics, UiWidgets.font(), stamp, x + 4.0F, y + offset + 3.0F,
+						Render.alpha(theme.textFaint, alpha), false);
+				Render.text(graphics, UiWidgets.font(),
+						Render.ellipsize(UiWidgets.font(), path.getFileName().toString(), width - 62.0F),
+						x + 54.0F, y + offset + 3.0F,
+						Render.alpha(active ? theme.text : theme.textDim, alpha), false);
+			}
+
+			@Override
+			public boolean mouseClicked(float mouseX, float mouseY, int button) {
+				if (isHovered(mouseX, mouseY) && button == 0) {
+					selected = index;
+					if (info != null) {
+						info.setText(currentName());
+					}
+					playClick(true);
+					return true;
+				}
+				return false;
 			}
 		}
 	}
 
-	// ---------------------------------------------------------------- waypoints
+	// ============================================================= waypoints
 
-	public static final class WaypointsScreen extends ListScreen {
+	/** Death markers and manual waypoints, client side only. */
+	public static final class WaypointsScreen extends ChaosScreen {
 		private final List<Waypoint> listed = new ArrayList<>();
+		private UiWidgets.ScrollList list;
+		private UiWidgets.Label countLabel;
 
 		public WaypointsScreen(Screen parent) {
-			super(parent, "Waypoints");
+			super(parent, Component.literal("Waypoints"), "window.waypoints", 620.0F, 400.0F);
 		}
 
 		@Override
-		protected String subtitle() {
-			return "Left click a waypoint to copy its coordinates, right click to delete it.";
-		}
+		protected void buildLayout() {
+			UiTheme theme = UiTheme.get();
+			float contentX = window().x() + 18.0F;
+			float contentWidth = window().width() - 36.0F;
+			float top = window().y() + window().titleHeight() + 14.0F;
 
-		@Override
-		protected void buildRows(float top, float left, float width, float rowHeight) {
-			UiTheme theme = theme();
-			listed.clear();
-			listed.addAll(ChaosConfig.WAYPOINTS);
-			int visibleRows = (int) ((this.height - top - 90.0F) / rowHeight);
-			for (int i = 0; i < Math.min(visibleRows, listed.size()); i++) {
-				Waypoint waypoint = listed.get(i);
-				String dimension = waypoint.dimension.contains(":") ? waypoint.dimension.split(":")[1] : waypoint.dimension;
-				String label = (waypoint.temporary ? "§7*" : "§f") + waypoint.name + " §8· §7" + dimension + " §8· "
-						+ (int) waypoint.x + " " + (int) waypoint.y + " " + (int) waypoint.z;
-				WaypointRow row = new WaypointRow(label, waypoint.color, waypoint,
-						() -> Clipboard.copyText(
-								String.format(Locale.ROOT, "%.1f %.1f %.1f", waypoint.x, waypoint.y, waypoint.z)),
-						() -> {
-							ChaosConfig.WAYPOINTS.remove(waypoint);
-							ChaosConfig.markDirty();
-							refresh();
-						});
-				row.setBounds(left, top + i * rowHeight, width, rowHeight - 3.0F);
-				add(row);
-			}
+			countLabel = new UiWidgets.Label("", theme.textFaint);
+			countLabel.setBounds(contentX, top, contentWidth, 12.0F);
+			add(countLabel);
 
-			UiWidgets.Button addHere = new UiWidgets.Button(this, "Add current position", theme.accent, () -> {
-				net.minecraft.client.Minecraft client = net.minecraft.client.Minecraft.getInstance();
-				if (client.player == null || client.level == null) {
-					return;
-				}
-				ChaosConfig.WAYPOINTS.add(new Waypoint("Waypoint " + (ChaosConfig.WAYPOINTS.size() + 1),
-						client.player.getX(), client.player.getY(), client.player.getZ(),
-						client.level.dimension().identifier().toString(), theme.accent, false, 0L));
-				ChaosConfig.markDirty();
-				refresh();
-			});
-			addHere.setBounds(left, this.height - 28.0F, 120.0F, 18.0F);
-			add(addHere);
+			list = new UiWidgets.ScrollList();
+			list.setSpacing(3.0F);
+			list.setBounds(contentX, top + 16.0F, contentWidth, Math.max(80.0F, window().height() - window().titleHeight() - 62.0F));
+			list.snapAppear();
+			add(list);
+			rebuildList();
 
-			UiWidgets.Button clearTemporary = new UiWidgets.Button(this, "Clear temporary", theme.warning, () -> {
-				ChaosConfig.WAYPOINTS.removeIf(waypoint -> waypoint.temporary);
-				ChaosConfig.markDirty();
-				refresh();
-			});
-			clearTemporary.setBounds(left + 126.0F, this.height - 28.0F, 100.0F, 18.0F);
+			float bottom = window().bottom() - 30.0F;
+			UiWidgets.Button add = new UiWidgets.Button("Add current position", UiWidgets.Button.Variant.PRIMARY,
+					theme.accent, () -> {
+						if (this.minecraft == null || this.minecraft.player == null || this.minecraft.level == null) {
+							return;
+						}
+						ChaosConfig.WAYPOINTS.add(new Waypoint("Waypoint " + (ChaosConfig.WAYPOINTS.size() + 1),
+								this.minecraft.player.getX(), this.minecraft.player.getY(), this.minecraft.player.getZ(),
+								this.minecraft.level.dimension().identifier().toString(), theme.accent, false, 0L));
+						ChaosConfig.markDirty();
+						rebuildList();
+						toast("Waypoint added");
+					});
+			add.setBounds(contentX, bottom, 130.0F, 20.0F);
+			add(add);
+
+			UiWidgets.Button clearTemporary = new UiWidgets.Button("Clear temporary", UiWidgets.Button.Variant.GHOST,
+					theme.warning, () -> {
+						ChaosConfig.WAYPOINTS.removeIf(waypoint -> waypoint.temporary);
+						ChaosConfig.markDirty();
+						rebuildList();
+						toast("Temporary markers cleared");
+					});
+			clearTemporary.setBounds(contentX + 136.0F, bottom, 112.0F, 20.0F);
 			add(clearTemporary);
 		}
 
-		private void refresh() {
-			if (this.minecraft != null) {
-				this.minecraft.setScreen(new WaypointsScreen(parent));
+		private void rebuildList() {
+			list.clearItems();
+			listed.clear();
+			listed.addAll(ChaosConfig.WAYPOINTS);
+			for (Waypoint waypoint : listed) {
+				list.addItem(new WaypointRow(waypoint));
 			}
-		}
-	}
-
-	/** Label / value row with optional left and right click actions. */
-	static final class ValueRow extends UiComponent {
-		private final String label;
-		private final String value;
-		private final int accent;
-		private final Runnable onLeft;
-		private final Runnable onRight;
-
-		ValueRow(String label, String value, int accent, Runnable onLeft, Runnable onRight) {
-			this.label = label;
-			this.value = value;
-			this.accent = accent;
-			this.onLeft = onLeft;
-			this.onRight = onRight;
+			list.layout();
+			if (countLabel != null) {
+				countLabel.setText(listed.size() + " waypoints  ·  left click copies, right click deletes");
+			}
 		}
 
 		@Override
-		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			Font font = net.minecraft.client.Minecraft.getInstance().font;
-			Render.text(graphics, font, label, x, y + 5.0F, theme.textDim, false);
-			float boxWidth = width - 96.0F;
-			float bx = x + width - boxWidth;
-			int background = Render.mix(theme.panelAlt, theme.panelHover, hover.get());
-			Render.roundedRect(graphics, bx, y, boxWidth, height, theme.radius * 0.6F, background);
-			String text = value == null ? "" : value;
-			while (font.width(text) > boxWidth - 10.0F && text.length() > 4) {
-				text = text.substring(0, text.length() - 2) + "…";
-			}
-			Render.text(graphics, font, text, bx + 5.0F, y + 5.0F, theme.text, false);
-			Render.rect(graphics, bx + 1.0F, y + height - 2.0F, boxWidth - 2.0F, 1.0F, Render.alpha(accent, 0.6F));
+		protected void renderHeader(GuiGraphics graphics, float alpha) {
+			UiTheme theme = theme();
+			Render.boldText(graphics, UiWidgets.font(), "Waypoints", window().x() + 16.0F, window().y() + 13.0F,
+					Render.alpha(theme.text, alpha), false);
+			String subtitle = "drawn client-side only";
+			Render.text(graphics, UiWidgets.font(), subtitle, window().right() - 16.0F - UiWidgets.font().width(subtitle),
+					window().y() + 13.0F, Render.alpha(theme.textFaint, alpha), false);
 		}
 
-		@Override
-		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (!isHovered(mouseX, mouseY)) {
+		private final class WaypointRow extends UiComponent {
+			private final Waypoint waypoint;
+
+			private WaypointRow(Waypoint waypoint) {
+				this.waypoint = waypoint;
+				this.setTooltip(String.format(Locale.ROOT, "%.1f %.1f %.1f", waypoint.x, waypoint.y, waypoint.z)
+						+ "\n§7" + waypoint.dimension);
+			}
+
+			@Override
+			public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+				float alpha = alpha();
+				if (alpha <= 0.01F) {
+					return;
+				}
+				UiTheme theme = UiTheme.get();
+				float offset = appearOffset();
+				Render.roundedRect(graphics, x, y + offset, width, height, 7.0F,
+						Render.mix(Render.alpha(0xFFFFFF, 0.025F * alpha), Render.alpha(0xFFFFFF, 0.07F * alpha), hover.get()));
+				Ui.dot(graphics, x + 10.0F, y + offset + height * 0.5F, 3.5F,
+						Render.alpha(waypoint.color, alpha));
+				Render.text(graphics, UiWidgets.font(), Render.ellipsize(UiWidgets.font(), waypoint.name, 130.0F),
+						x + 20.0F, y + offset + 5.0F, Render.alpha(theme.text, alpha), false);
+				String dimension = waypoint.dimension.contains(":")
+						? waypoint.dimension.substring(waypoint.dimension.indexOf(':') + 1) : waypoint.dimension;
+				String coords = String.format(Locale.ROOT, "%s  ·  %.0f %.0f %.0f", dimension,
+						waypoint.x, waypoint.y, waypoint.z);
+				Render.text(graphics, UiWidgets.font(), coords, x + 160.0F, y + offset + 5.0F,
+						Render.alpha(theme.textDim, alpha), false);
+				if (waypoint.temporary) {
+					Render.text(graphics, UiWidgets.font(), "temp", right() - 30.0F, y + offset + 5.0F,
+							Render.alpha(theme.warning, alpha), false);
+				}
+			}
+
+			@Override
+			public boolean mouseClicked(float mouseX, float mouseY, int button) {
+				if (!isHovered(mouseX, mouseY)) {
+					return false;
+				}
+				if (button == 0) {
+					Clipboard.copyText(String.format(Locale.ROOT, "%.1f %.1f %.1f", waypoint.x, waypoint.y, waypoint.z));
+					toast("Coordinates copied");
+					return true;
+				}
+				if (button == 1) {
+					ChaosConfig.WAYPOINTS.remove(waypoint);
+					ChaosConfig.markDirty();
+					rebuildList();
+					return true;
+				}
 				return false;
 			}
-			if (button == 0 && onLeft != null) {
-				onLeft.run();
-				return true;
-			}
-			if (button == 1 && onRight != null) {
-				onRight.run();
-				return true;
-			}
-			return onLeft != null || onRight != null;
 		}
 	}
-
-	/** Waypoint row: the usual look with right click delete. */
-	static final class WaypointRow extends UiComponent {
-		private final String label;
-		private final int accent;
-		private final Waypoint waypoint;
-		private final Runnable onLeft;
-		private final Runnable onRight;
-
-		WaypointRow(String label, int accent, Waypoint waypoint, Runnable onLeft, Runnable onRight) {
-			this.label = label;
-			this.accent = accent;
-			this.waypoint = waypoint;
-			this.onLeft = onLeft;
-			this.onRight = onRight;
-		}
-
-		@Override
-		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			Font font = net.minecraft.client.Minecraft.getInstance().font;
-			int background = Render.mix(theme.panelAlt, theme.panelHover, hover.get());
-			Render.roundedRect(graphics, x, y, width, height, theme.radius * 0.6F, background);
-			Render.rect(graphics, x + 2.0F, y + 3.0F, 2.0F, height - 6.0F, accent);
-			String text = label;
-			while (font.width(text) > width - 14.0F && text.length() > 6) {
-				text = text.substring(0, text.length() - 2) + "…";
-			}
-			Render.text(graphics, font, text, x + 8.0F, y + 5.0F, theme.text, false);
-			Render.text(graphics, font, waypoint.expired() ? "expired" : "", x + width - 44.0F, y + 5.0F,
-					theme.textFaint, false);
-		}
-
-		@Override
-		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (!isHovered(mouseX, mouseY)) {
-				return false;
-			}
-			if (button == 0) {
-				onLeft.run();
-				return true;
-			}
-			if (button == 1) {
-				onRight.run();
-				return true;
-			}
-			return false;
-		}
-	}
-
 }
 ```
 
@@ -5917,157 +7192,435 @@ import java.util.List;
 import dev.chaosutils.config.Module;
 import dev.chaosutils.config.ModuleManager;
 import dev.chaosutils.config.Setting;
+import dev.chaosutils.util.Anim;
+import dev.chaosutils.util.HudPos;
 import dev.chaosutils.util.Render;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
 
 /**
  * Drag &amp; drop editor for every movable overlay.
  *
- * <p>Overlays store their position as a fraction of the free space, so this screen simply
- * maps the drag delta onto that fraction. Holding the module list on the left and the live
- * preview of every enabled overlay makes arranging the HUD a two second job.
+ * <p>The window lists the overlays with their switches while the ghost boxes themselves live in
+ * screen space, exactly where the overlays will appear in game. Positions are stored as a fraction
+ * of the free space, so the drag delta is mapped straight onto that fraction and the layout survives
+ * every GUI scale and window size.
  */
-public final class HudEditorScreen extends Screen {
-	private record Entry(Module module, Setting.Position position, String label) {
+public final class HudEditorScreen extends ChaosScreen {
+	private static final float GHOST_WIDTH = 132.0F;
+	private static final float GHOST_HEIGHT = 26.0F;
+
+	private record Entry(Module module, Setting.Position position) {
 	}
 
-	private final Screen parent;
 	private final List<Entry> entries = new ArrayList<>();
 	private Entry dragging;
 	private float grabOffsetX;
 	private float grabOffsetY;
-	private float previewX;
-	private float previewY;
-	private float previewWidth = 120.0F;
-	private float previewHeight = 26.0F;
-	private float lastMouseX;
-	private float lastMouseY;
+	private float snapFlash;
+	private boolean showGrid = true;
 
 	public HudEditorScreen(Screen parent) {
-		super(Component.literal("ChaosUtils HUD Editor"));
-		this.parent = parent;
+		super(parent, Component.literal("HUD Editor"), "window.hudeditor", 520.0F, 360.0F);
 	}
 
 	@Override
-	protected void init() {
+	protected void buildLayout() {
+		UiTheme theme = UiTheme.get();
 		entries.clear();
 		for (Module module : ModuleManager.modules()) {
-			if (!module.isEnabled()) {
-				continue;
-			}
 			for (Setting<?> setting : module.settings()) {
 				if (setting instanceof Setting.Position position) {
-					entries.add(new Entry(module, position, module.name() + " · " + setting.label));
+					entries.add(new Entry(module, position));
 				}
 			}
 		}
+
+		float contentX = window().x() + 20.0F;
+		float contentWidth = window().width() - 40.0F;
+		float top = window().y() + window().titleHeight() + 16.0F;
+
+		UiWidgets.Label hint = new UiWidgets.Label("Drag the ghost boxes to place your overlays.", theme.textFaint);
+		hint.setBounds(contentX, top, contentWidth, 12.0F);
+		add(hint);
+
+		UiWidgets.ScrollList list = new UiWidgets.ScrollList();
+		list.setSpacing(6.0F);
+		list.setBounds(contentX, top + 18.0F, contentWidth, Math.max(80.0F, window().height() - window().titleHeight() - 74.0F));
+		list.snapAppear();
+		add(list);
+
+		int index = 0;
+		for (Entry entry : entries) {
+			list.addItem(new OverlayRow(entry, index));
+			index++;
+		}
+		list.layout();
+
+		UiWidgets.Button grid = new UiWidgets.Button(showGrid ? "Grid: on" : "Grid: off",
+				UiWidgets.Button.Variant.GHOST, theme.accent, () -> {
+					showGrid = !showGrid;
+					refresh();
+				});
+		grid.setBounds(contentX, window().bottom() - 30.0F, 90.0F, 20.0F);
+		grid.setTooltip("Toggle the alignment grid.");
+		add(grid);
+
+		UiWidgets.Button reset = new UiWidgets.Button("Reset all", UiWidgets.Button.Variant.GHOST, theme.warning, () -> {
+			for (Entry entry : entries) {
+				entry.position.reset();
+			}
+			toast("All overlays reset");
+			snapFlash = 1.0F;
+		});
+		reset.setBounds(contentX + 98.0F, window().bottom() - 30.0F, 88.0F, 20.0F);
+		reset.setTooltip("Move every overlay back to its default corner.");
+		add(reset);
+
+		UiWidgets.Button done = new UiWidgets.Button("Done", UiWidgets.Button.Variant.PRIMARY, theme.accent, this::requestClose);
+		done.setBounds(window().right() - 110.0F, window().bottom() - 30.0F, 90.0F, 20.0F);
+		done.setTooltip("Save and go back.");
+		add(done);
 	}
 
 	@Override
-	public void render(GuiGraphics graphics, int mouseX, int mouseY, float deltaTicks) {
-		lastMouseX = mouseX;
-		lastMouseY = mouseY;
-		UiTheme theme = UiTheme.get();
-		// Never call renderBackground here - vanilla already did that (and used the frame's blur).
-		Backdrop.render(graphics, this, theme);
+	protected void renderHeader(GuiGraphics graphics, float alpha) {
+		UiTheme theme = theme();
+		Render.boldText(graphics, UiWidgets.font(), "HUD Editor", window().x() + 16.0F, window().y() + 13.0F,
+				Render.alpha(theme.text, alpha), false);
+		String subtitle = entries.size() + " movable overlays";
+		Render.text(graphics, UiWidgets.font(), subtitle, window().right() - 16.0F - UiWidgets.font().width(subtitle), window().y() + 13.0F,
+				Render.alpha(theme.textFaint, alpha), false);
+	}
 
-		float panelWidth = 190.0F;
-		Render.shadowedPanel(graphics, 10.0F, 10.0F, panelWidth, height - 20.0F, theme.radius, theme.panel, theme.accent);
-		Render.text(graphics, font, "HUD Editor", 20.0F, 20.0F, theme.text, false);
-		Render.text(graphics, font, "Drag the ghost boxes to", 20.0F, 34.0F, theme.textDim, false);
-		Render.text(graphics, font, "place overlays. Esc applies.", 20.0F, 44.0F, theme.textDim, false);
+	// ------------------------------------------------------------ screen space
 
-		float listY = 62.0F;
-		for (Entry entry : entries) {
-			boolean hovered = mouseX >= 14.0F && mouseX <= 10.0F + panelWidth - 4.0F && mouseY >= listY && mouseY <= listY + 16.0F;
-			if (hovered) {
-				Render.roundedRect(graphics, 14.0F, listY - 2.0F, panelWidth - 8.0F, 18.0F, 4.0F, Render.alpha(theme.accent, 0.25F));
+	@Override
+	protected void renderScreenSpace(GuiGraphics graphics, float mouseX, float mouseY) {
+		UiTheme theme = theme();
+		float alpha = alpha();
+		if (alpha <= 0.02F) {
+			return;
+		}
+		if (showGrid) {
+			for (float x = 0.0F; x <= this.width; x += 40.0F) {
+				Render.rect(graphics, x, 0.0F, 1.0F, this.height, Render.alpha(0xFFFFFF, 0.022F * alpha));
 			}
-			Render.text(graphics, font, trim(entry.label), 20.0F, listY + 2.0F, hovered ? theme.text : theme.textDim, false);
-			listY += 18.0F;
-			if (listY > height - 40.0F) {
-				break;
+			for (float y = 0.0F; y <= this.height; y += 40.0F) {
+				Render.rect(graphics, 0.0F, y, this.width, 1.0F, Render.alpha(0xFFFFFF, 0.022F * alpha));
 			}
 		}
-
-		// Ghost previews of every movable overlay.
+		if (snapFlash > 0.01F) {
+			Render.rect(graphics, 0.0F, 0.0F, this.width, this.height, Render.alpha(theme.accent, 0.06F * snapFlash * alpha));
+			snapFlash = Math.max(0.0F, snapFlash - deltaSeconds * 2.4F);
+		}
 		for (Entry entry : entries) {
-			boolean isDragging = dragging == entry;
-			float x = entry.position.get().screenX(this.width, Math.round(previewWidth));
-			float y = entry.position.get().screenY(this.height, Math.round(previewHeight));
+			boolean enabled = entry.module.isEnabled();
+			float x = entry.position.get().screenX(this.width, Math.round(GHOST_WIDTH));
+			float y = entry.position.get().screenY(this.height, Math.round(GHOST_HEIGHT));
+			boolean hovered = mouseX >= x && mouseX <= x + GHOST_WIDTH && mouseY >= y && mouseY <= y + GHOST_HEIGHT;
+			boolean active = dragging == entry;
 			int accent = entry.module.category().color();
-			int fill = isDragging ? Render.alpha(accent, 0.55F) : Render.alpha(accent, 0.25F);
-			Render.roundedRect(graphics, x, y, previewWidth, previewHeight, theme.radius, fill);
-			Render.roundedBorder(graphics, x, y, previewWidth, previewHeight, theme.radius, 1.0F, Render.alpha(accent, 0.9F), fill);
-			Render.text(graphics, font, trim(entry.module.name()), x + 6.0F, y + 6.0F, theme.text, true);
-			Render.text(graphics, font, entry.position.display(), x + 6.0F, y + 16.0F, theme.textDim, false);
-		}
-		super.render(graphics, mouseX, mouseY, deltaTicks);
-	}
+			float presence = enabled ? 1.0F : 0.45F;
+			float emphasis = active ? 1.0F : (hovered ? 0.85F : 0.55F);
 
-	private String trim(String value) {
-		String result = value;
-		while (font.width(result) > 168 && result.length() > 4) {
-			result = result.substring(0, result.length() - 2) + "…";
+			Render.softShadow(graphics, x, y, GHOST_WIDTH, GHOST_HEIGHT, 8.0F, 0.7F * presence * alpha);
+			Render.roundedRect(graphics, x, y, GHOST_WIDTH, GHOST_HEIGHT, 8.0F,
+					Render.mix(Render.alpha(0x12131C, 0.85F * presence * alpha),
+							Render.alpha(accent, 0.28F * presence * alpha), emphasis * 0.6F));
+			Render.ring(graphics, x, y, GHOST_WIDTH, GHOST_HEIGHT, 8.0F, active ? 1.6F : 1.0F,
+					Render.alpha(accent, presence * alpha * (active ? 1.0F : 0.6F)));
+			Ui.dot(graphics, x + 10.0F, y + GHOST_HEIGHT * 0.5F, 3.0F,
+					Render.alpha(enabled ? accent : theme.textFaint, presence * alpha));
+			Render.text(graphics, UiWidgets.font(), Render.ellipsize(UiWidgets.font(), entry.module.name(), GHOST_WIDTH - 46.0F),
+					x + 18.0F, y + 5.0F, Render.alpha(theme.text, presence * alpha), false);
+			Render.text(graphics, UiWidgets.font(), entry.position.display(), x + 18.0F, y + 15.0F,
+					Render.alpha(theme.textFaint, presence * alpha), false);
 		}
-		return result;
 	}
 
 	@Override
-	public boolean mouseClicked(MouseButtonEvent event, boolean doubled) {
-		if (event.button() != 0) {
-			return super.mouseClicked(event, doubled);
+	protected boolean mouseClickedScreenSpace(float mouseX, float mouseY, int button) {
+		if (button != 0) {
+			return false;
 		}
 		for (Entry entry : entries) {
-			float x = entry.position.get().screenX(this.width, Math.round(previewWidth));
-			float y = entry.position.get().screenY(this.height, Math.round(previewHeight));
-			if (lastMouseX >= x && lastMouseX <= x + previewWidth && lastMouseY >= y && lastMouseY <= y + previewHeight) {
+			float x = entry.position.get().screenX(this.width, Math.round(GHOST_WIDTH));
+			float y = entry.position.get().screenY(this.height, Math.round(GHOST_HEIGHT));
+			if (mouseX >= x && mouseX <= x + GHOST_WIDTH && mouseY >= y && mouseY <= y + GHOST_HEIGHT) {
 				dragging = entry;
-				grabOffsetX = lastMouseX - x;
-				grabOffsetY = lastMouseY - y;
+				grabOffsetX = mouseX - x;
+				grabOffsetY = mouseY - y;
+				playClick(true);
 				return true;
 			}
 		}
-		return super.mouseClicked(event, doubled);
-	}
-
-	@Override
-	public boolean mouseDragged(MouseButtonEvent event, double deltaX, double deltaY) {
-		if (dragging != null) {
-			float targetX = lastMouseX - grabOffsetX;
-			float targetY = lastMouseY - grabOffsetY;
-			int maxX = Math.max(1, this.width - Math.round(previewWidth));
-			int maxY = Math.max(1, this.height - Math.round(previewHeight));
-			float fractionX = Math.max(0.0F, Math.min(1.0F, targetX / maxX));
-			float fractionY = Math.max(0.0F, Math.min(1.0F, targetY / maxY));
-			dragging.position.set(new dev.chaosutils.util.HudPos(fractionX, fractionY));
-			return true;
-		}
-		return super.mouseDragged(event, deltaX, deltaY);
-	}
-
-	@Override
-	public boolean mouseReleased(MouseButtonEvent event) {
-		if (dragging != null) {
-			dragging = null;
-			return true;
-		}
-		return super.mouseReleased(event);
-	}
-
-	@Override
-	public void onClose() {
-		if (this.minecraft != null) {
-			this.minecraft.setScreen(parent);
-		}
-	}
-
-	@Override
-	public boolean isPauseScreen() {
 		return false;
+	}
+
+	@Override
+	protected boolean mouseDraggedScreenSpace(float mouseX, float mouseY, int button, float deltaX, float deltaY) {
+		if (dragging == null || button != 0) {
+			return false;
+		}
+		float targetX = mouseX - grabOffsetX;
+		float targetY = mouseY - grabOffsetY;
+		// Snap to a 20 pixel grid while shift is not held, which is what makes a tidy HUD.
+		if (!isShiftDown()) {
+			targetX = Math.round(targetX / 20.0F) * 20.0F;
+			targetY = Math.round(targetY / 20.0F) * 20.0F;
+		}
+		int maxX = Math.max(1, this.width - Math.round(GHOST_WIDTH));
+		int maxY = Math.max(1, this.height - Math.round(GHOST_HEIGHT));
+		dragging.position.set(new HudPos(
+				Anim.clamp(targetX / maxX, 0.0F, 1.0F),
+				Anim.clamp(targetY / maxY, 0.0F, 1.0F)));
+		return true;
+	}
+
+	@Override
+	protected boolean mouseReleasedScreenSpace(float mouseX, float mouseY, int button) {
+		if (dragging != null && button == 0) {
+			dragging = null;
+			snapFlash = 1.0F;
+			return true;
+		}
+		return false;
+	}
+
+	private static boolean isShiftDown() {
+		try {
+			return org.lwjgl.glfw.GLFW.glfwGetKey(net.minecraft.client.Minecraft.getInstance().getWindow().handle(),
+					org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_SHIFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS
+					|| org.lwjgl.glfw.GLFW.glfwGetKey(
+							net.minecraft.client.Minecraft.getInstance().getWindow().handle(),
+							org.lwjgl.glfw.GLFW.GLFW_KEY_RIGHT_SHIFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+		} catch (Throwable ignored) {
+			return false;
+		}
+	}
+
+	/** One overlay row: name, live switch and a "drag me" hint. */
+	private final class OverlayRow extends UiComponent {
+		private final Entry entry;
+		private final UiWidgets.Toggle toggle;
+		private final int index;
+
+		private OverlayRow(Entry entry, int index) {
+			this.entry = entry;
+			this.index = index;
+			this.toggle = new UiWidgets.Toggle(() -> entry.module.isEnabled(), value -> {
+				if (entry.module.isEnabled() != value) {
+					entry.module.enabled().toggle();
+					playClick(value);
+				}
+			}, UiTheme.get().accent);
+			this.setTooltip(entry.module.description() + "\n§7drag the ghost box on screen to move it");
+			this.setAppearDelay(Math.min(0.2F, 0.02F * index));
+		}
+
+		@Override
+		public void update(float deltaSeconds, float mouseX, float mouseY) {
+			super.update(deltaSeconds, mouseX, mouseY);
+			toggle.setBounds(right() - 40.0F, y, 30.0F, height);
+			toggle.setLayerAlpha(layerAlpha);
+			toggle.update(deltaSeconds, mouseX, mouseY);
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			float offset = appearOffset();
+			boolean enabled = entry.module.isEnabled();
+			int accent = entry.module.category().color();
+			Render.roundedRect(graphics, x, y + offset, width, height, 8.0F,
+					Render.mix(Render.alpha(0xFFFFFF, 0.02F * alpha), Render.alpha(0xFFFFFF, 0.06F * alpha), hover.get()));
+			Ui.dot(graphics, x + 10.0F, y + offset + height * 0.5F, 3.0F,
+					Render.alpha(enabled ? accent : theme.textFaint, alpha));
+			Render.text(graphics, UiWidgets.font(), Render.ellipsize(UiWidgets.font(), entry.module.name(), width - 60.0F),
+					x + 18.0F, y + offset + (height - 8.0F) * 0.5F,
+					Render.alpha(enabled ? theme.text : theme.textFaint, alpha), false);
+			toggle.render(graphics, mouseX, mouseY, deltaSeconds);
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (!isHovered(mouseX, mouseY)) {
+				return false;
+			}
+			if (x + width - 44.0F <= mouseX) {
+				return toggle.mouseClicked(mouseX, mouseY, button);
+			}
+			// clicking the row highlights the matching ghost box
+			snapFlash = 1.0F;
+			return true;
+		}
+	}
+}
+```
+
+### `src/main/java/dev/chaosutils/gui/Ui.java`
+
+```java
+package dev.chaosutils.gui;
+
+import dev.chaosutils.util.Render;
+import net.minecraft.client.gui.Font;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.world.item.ItemStack;
+
+/**
+ * The visual vocabulary of the ChaosUtils interface.
+ *
+ * <p>Everything the interface draws goes through one of these helpers, which is what keeps the
+ * look consistent: one place for the window chrome, one for cards, one for hairlines. Shapes are
+ * composed from {@code GuiGraphics#fill} scanlines and two small tinted textures, so nothing here
+ * depends on shader or pipeline internals.
+ */
+public final class Ui {
+	private Ui() {
+	}
+
+	// ------------------------------------------------------------------ window
+
+	/** Floating window: drop shadow, gradient body, top sheen and a hairline outline. */
+	public static void window(GuiGraphics graphics, float x, float y, float width, float height, float radius,
+			UiTheme theme, float appear) {
+		if (appear <= 0.01F) {
+			return;
+		}
+		if (theme.glow) {
+			Render.glow(graphics, x + width * 0.5F, y + 10.0F, Math.min(width, height) * 0.58F, theme.accent,
+					0.16F * appear);
+		}
+		if (theme.windowShadow) {
+			Render.softShadow(graphics, x, y, width, height, radius, theme.shadowStrength * 1.1F * appear);
+		}
+		Render.roundedRectGradient(graphics, x, y, width, height, radius,
+				Render.alpha(theme.windowTop, appear), Render.alpha(theme.windowBottom, appear));
+		Render.roundedRectGradient(graphics, x + 1.0F, y + 1.0F, width - 2.0F, Math.min(30.0F, height * 0.25F),
+				Math.max(0.0F, radius - 1.0F), Render.alpha(0xFFFFFFFF, 0.05F * appear),
+				Render.alpha(0xFFFFFFFF, 0.0F));
+		Render.ring(graphics, x, y, width, height, radius, 1.0F, Render.alpha(theme.outlineStrong, appear));
+	}
+
+	/** Sidebar surface: only the corners on {@code left} are rounded (scissor-based). */
+	public static void sideSurface(GuiGraphics graphics, float x, float y, float width, float height, float radius,
+			boolean left, int top, int bottom) {
+		float over = radius + 2.0F;
+		Render.scissor(graphics, x, y, width, height);
+		Render.roundedRectGradient(graphics, left ? x : x - over, y, width + over, height, radius, top, bottom);
+		Render.unscissor(graphics);
+	}
+
+	/** Header strip at the top of a window: slightly lighter, fades into the body. */
+	public static void header(GuiGraphics graphics, float x, float y, float width, float height, float radius, UiTheme theme, float appear) {
+		Render.scissor(graphics, x, y, width, height);
+		Render.roundedRectGradient(graphics, x, y, width, height + radius, radius,
+				Render.alpha(0xFFFFFFFF, 0.028F * appear), Render.alpha(0xFFFFFFFF, 0.0F));
+		Render.unscissor(graphics);
+		Render.rect(graphics, x + radius, y + height - 1.0F, width - radius * 2.0F, 1.0F,
+				Render.alpha(theme.outlineSoft, appear));
+	}
+
+	// ------------------------------------------------------------------- cards
+
+	/** Card surface with hover lift; {@code active} draws the accent tint and outline. */
+	public static void card(GuiGraphics graphics, float x, float y, float width, float height, float radius,
+			UiTheme theme, float hover, boolean active, float alpha) {
+		int base = active ? theme.cardActive : Render.mix(theme.card, theme.cardHover, hover);
+		if (theme.glow && (hover > 0.02F || active)) {
+			Render.halo(graphics, x, y, width, height, radius, theme.accent, (active ? 0.55F : 0.35F) * hover + (active ? 0.2F : 0.0F));
+		}
+		Render.roundedRect(graphics, x, y, width, height, radius, Render.mix(0x00000000, base, alpha));
+		Render.ring(graphics, x, y, width, height, radius, 1.0F,
+				Render.mix(Render.alpha(theme.outlineSoft, alpha),
+						Render.alpha(active ? theme.accentSoft : theme.outlineStrong, alpha), Math.max(hover, active ? 1.0F : 0.0F)));
+	}
+
+	/** Rounded square behind an item icon, tinted with the owner's accent colour. */
+	public static void iconTile(GuiGraphics graphics, float x, float y, float size, float radius, int color, float alpha) {
+		Render.roundedRect(graphics, x, y, size, size, radius, Render.alpha(color, 0.16F * alpha));
+		Render.ring(graphics, x, y, size, size, radius, 1.0F, Render.alpha(color, 0.34F * alpha));
+	}
+
+	public static void itemIcon(GuiGraphics graphics, ItemStack stack, float centerX, float centerY, float scale, float alpha) {
+		if (stack == null || stack.isEmpty() || alpha <= 0.02F) {
+			return;
+		}
+		graphics.pose().pushMatrix();
+		graphics.pose().translate(centerX, centerY);
+		graphics.pose().scale(scale, scale);
+		graphics.pose().translate(-centerX, -centerY);
+		Render.item(graphics, stack, centerX - 8.0F, centerY - 8.0F);
+		graphics.pose().popMatrix();
+	}
+
+	// ----------------------------------------------------------------- strokes
+
+	public static void divider(GuiGraphics graphics, float x, float y, float width, UiTheme theme, float alpha) {
+		Render.roundedRect(graphics, x, y, width, 1.0F, 0.5F, Render.alpha(theme.outlineSoft, alpha));
+	}
+
+	/** Very small uppercase section caption, the way modern interfaces label groups. */
+	public static void sectionLabel(GuiGraphics graphics, Font font, String text, float x, float y, int color, float alpha) {
+		Render.text(graphics, font, text.toUpperCase(java.util.Locale.ROOT), x, y, Render.alpha(color, alpha), false);
+	}
+
+	/** Chevron used for expanders and dropdowns; {@code rotation} is in degrees (0 = pointing right). */
+	public static void chevron(GuiGraphics graphics, float centerX, float centerY, float size, float rotation, int color) {
+		float half = size * 0.5F;
+		float thickness = Math.max(1.4F, size * 0.24F);
+		double angle = Math.toRadians(rotation);
+		float cos = (float) Math.cos(angle);
+		float sin = (float) Math.sin(angle);
+		// Two arms of a ">" rotated around the centre.
+		float ax = -half * cos;
+		float ay = -half * sin;
+		float bx = half * cos;
+		float by = half * sin;
+		float cx = bx - size * sin * 0.55F;
+		float cy = by + size * cos * 0.55F;
+		Render.line(graphics, centerX + ax, centerY + ay, centerX + bx, centerY + by, thickness, color);
+		Render.line(graphics, centerX + bx, centerY + by, centerX + cx, centerY + cy, thickness, color);
+	}
+
+	/** Check mark used by toggles and lists. */
+	public static void check(GuiGraphics graphics, float centerX, float centerY, float size, int color) {
+		float thickness = Math.max(1.5F, size * 0.22F);
+		Render.line(graphics, centerX - size * 0.42F, centerY + size * 0.02F, centerX - size * 0.10F, centerY + size * 0.34F,
+				thickness, color);
+		Render.line(graphics, centerX - size * 0.10F, centerY + size * 0.34F, centerX + size * 0.44F, centerY - size * 0.34F,
+				thickness, color);
+	}
+
+	public static void dot(GuiGraphics graphics, float centerX, float centerY, float radius, int color) {
+		Render.circle(graphics, centerX, centerY, radius, color);
+	}
+
+	/** Thin horizontal progress track; {@code fraction} fills it from the left. */
+	public static void track(GuiGraphics graphics, float x, float y, float width, float height, float fraction,
+			int fill, int background) {
+		Render.roundedRect(graphics, x, y, width, height, height * 0.5F, background);
+		float filled = Math.max(0.0F, Math.min(1.0F, fraction)) * width;
+		if (filled > 0.5F) {
+			Render.roundedRect(graphics, x, y, Math.max(height, filled), height, height * 0.5F, fill);
+		}
+	}
+
+	/**
+	 * Glossy knob used by toggles and sliders: a filled circle with a soft inner highlight so it
+	 * reads as a physical object instead of a flat dot.
+	 */
+	public static void knob(GuiGraphics graphics, float centerX, float centerY, float radius, int color, float alpha) {
+		Render.circle(graphics, centerX, centerY, radius, Render.alpha(color, alpha));
+		Render.circle(graphics, centerX - radius * 0.18F, centerY - radius * 0.22F, radius * 0.62F,
+				Render.alpha(0xFFFFFFFF, 0.22F * alpha));
 	}
 }
 ```
@@ -6085,12 +7638,12 @@ import net.minecraft.client.gui.GuiGraphics;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * Lightweight GUI element.
+ * Lightweight GUI element of the ChaosUtils interface.
  *
- * <p>ChaosUtils deliberately uses its own component model instead of vanilla's widget
- * hierarchy: the input signatures of {@code AbstractWidget} changed with the 1.21.9 input
- * rework, and owning the model lets every element animate smoothly (hover glow, press
- * depth, expand/collapse) with shared timing instead of per-widget tweens.
+ * <p>ChaosUtils deliberately does not use the vanilla widget hierarchy: the input signatures of
+ * {@code AbstractWidget} move around between renderer rewrites, and owning the model is what lets
+ * every element animate with shared timing (hover lift, press depth, entrance stagger) without
+ * each widget carrying its own tweens.
  */
 public abstract class UiComponent {
 	protected float x;
@@ -6101,11 +7654,15 @@ public abstract class UiComponent {
 	protected boolean enabled = true;
 	protected String tooltip;
 
-	/** 0..1 hover amount, animated. */
-	protected final Anim.Value hover = new Anim.Value(0.0F, 14.0F);
-	/** 0..1 "activated" amount used for press feedback and toggles. */
-	protected final Anim.Value active = new Anim.Value(0.0F, 10.0F);
+	/** Layer alpha handed down by the owning screen (window fade in/out). */
+	protected float layerAlpha = 1.0F;
+	/** Entrance animation: 0 hidden, 1 fully placed. */
+	protected final Anim.Value appear = new Anim.Value(0.0F, 9.0F);
+	protected final Anim.Value hover = new Anim.Value(0.0F, 16.0F);
+	protected final Anim.Value active = new Anim.Value(0.0F, 12.0F);
+	protected final Anim.Value focus = new Anim.Value(0.0F, 11.0F);
 
+	private float appearDelay;
 	private final List<UiComponent> children = new ArrayList<>();
 
 	public UiComponent setBounds(float x, float y, float width, float height) {
@@ -6118,6 +7675,18 @@ public abstract class UiComponent {
 
 	public UiComponent setTooltip(@Nullable String tooltip) {
 		this.tooltip = tooltip;
+		return this;
+	}
+
+	/** Seconds to wait before this element animates in; used for staggered lists. */
+	public UiComponent setAppearDelay(float seconds) {
+		this.appearDelay = Math.max(0.0F, seconds);
+		return this;
+	}
+
+	public UiComponent snapAppear() {
+		this.appearDelay = 0.0F;
+		this.appear.snap(1.0F);
 		return this;
 	}
 
@@ -6149,6 +7718,14 @@ public abstract class UiComponent {
 		return x + width;
 	}
 
+	public float centerX() {
+		return x + width * 0.5F;
+	}
+
+	public float centerY() {
+		return y + height * 0.5F;
+	}
+
 	public boolean isVisible() {
 		return visible;
 	}
@@ -6163,6 +7740,23 @@ public abstract class UiComponent {
 
 	public boolean isEnabled() {
 		return enabled;
+	}
+
+	public void setLayerAlpha(float alpha) {
+		this.layerAlpha = Anim.clamp01(alpha);
+		for (UiComponent child : children) {
+			child.setLayerAlpha(alpha);
+		}
+	}
+
+	/** Combined alpha of this element: layer alpha times entrance animation. */
+	protected float alpha() {
+		return layerAlpha * Anim.clamp01(appear.get());
+	}
+
+	/** Pixel offset applied while the element is still animating in. */
+	protected float appearOffset() {
+		return (1.0F - Anim.easeOutQuint(appear.get())) * 6.0F;
 	}
 
 	public boolean contains(float mouseX, float mouseY) {
@@ -6182,11 +7776,18 @@ public abstract class UiComponent {
 	}
 
 	public void update(float deltaSeconds, float mouseX, float mouseY) {
+		if (appearDelay > 0.0F) {
+			appearDelay = Math.max(0.0F, appearDelay - deltaSeconds);
+		}
+		appear.set(appearDelay > 0.0F ? 0.0F : 1.0F);
+		appear.update(UiTheme.get().speed(9.0F));
 		float hovering = enabled && visible && contains(mouseX, mouseY) ? 1.0F : 0.0F;
 		hover.set(hovering);
-		hover.update(deltaSeconds);
-		active.update(deltaSeconds);
+		hover.update(UiTheme.get().speed(16.0F));
+		active.update(UiTheme.get().speed(12.0F));
+		focus.update(UiTheme.get().speed(11.0F));
 		for (UiComponent child : children) {
+			child.setLayerAlpha(layerAlpha);
 			child.update(deltaSeconds, mouseX, mouseY);
 		}
 	}
@@ -6250,19 +7851,16 @@ public abstract class UiComponent {
 		return false;
 	}
 
-	/** Content height used by scroll layouts; may exceed {@link #height}. */
-	public float contentHeight() {
-		float max = height;
-		for (UiComponent child : children) {
-			max = Math.max(max, child.y() - y + child.contentHeight());
-		}
-		return max;
+	/** Rebuilds children after a data change while keeping the current scroll position. */
+	public void refresh() {
 	}
 
-	/** Called when a component becomes hidden so it can drop transient state (keeps memory flat). */
+	/** Called when a component is taken out of the tree so it can drop transient state. */
 	public void reset() {
 		hover.snap(0.0F);
 		active.snap(0.0F);
+		focus.snap(0.0F);
+		appear.snap(0.0F);
 		for (UiComponent child : children) {
 			child.reset();
 		}
@@ -6270,6 +7868,658 @@ public abstract class UiComponent {
 
 	protected boolean isHovered(float mouseX, float mouseY) {
 		return enabled && visible && contains(mouseX, mouseY);
+	}
+}
+```
+
+### `src/main/java/dev/chaosutils/gui/UiModals.java`
+
+```java
+package dev.chaosutils.gui;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Consumer;
+import java.util.function.IntConsumer;
+
+import dev.chaosutils.config.Setting;
+import dev.chaosutils.util.Anim;
+import dev.chaosutils.util.Render;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.network.chat.Component;
+
+/**
+ * Modal layer of the interface: dimmed backdrop, floating dialog, entrance animation.
+ *
+ * <p>Modals are owned by the screen that opened them, animate themselves in and out and are
+ * always the first thing that receives input, so a dialog can never end up behind the window it
+ * belongs to. All of them are stateless outside their own lifetime - closing one releases its
+ * widgets immediately.
+ */
+public final class UiModals {
+	private UiModals() {
+	}
+
+	// =================================================================== base
+
+	public abstract static class Modal extends UiComponent {
+		private final Anim.Value presence = new Anim.Value(0.0F, 11.0F);
+		private final Anim.Value exit = new Anim.Value(0.0F, 14.0F);
+		private boolean closing;
+		private boolean done;
+		private Runnable onClosed;
+		/** Screen size handed in by the owning screen (never read from the window directly). */
+		protected float viewWidth = 320.0F;
+		protected float viewHeight = 240.0F;
+
+		protected Modal() {
+			this.visible = true;
+		}
+
+		public Modal onClosed(Runnable onClosed) {
+			this.onClosed = onClosed;
+			return this;
+		}
+
+		/** Called by the owning screen every frame so modals never guess the screen size. */
+		public void setScreenBounds(float width, float height) {
+			this.viewWidth = width;
+			this.viewHeight = height;
+		}
+
+		/** Starts the close animation; {@link #isFinished()} flips once it has played out. */
+		public void close() {
+			if (!closing) {
+				closing = true;
+				exit.set(1.0F);
+			}
+		}
+
+		public boolean isClosing() {
+			return closing;
+		}
+
+		public boolean isFinished() {
+			return done;
+		}
+
+		protected float presence() {
+			return Anim.clamp01(presence.get()) * (1.0F - Anim.easeOutQuint(exit.get()));
+		}
+
+		@Override
+		public void update(float deltaSeconds, float mouseX, float mouseY) {
+			presence.set(1.0F);
+			presence.update(UiTheme.get().speed(11.0F));
+			if (closing) {
+				exit.update(UiTheme.get().speed(14.0F));
+				if (exit.get() > 0.985F && !done) {
+					done = true;
+					if (onClosed != null) {
+						onClosed.run();
+					}
+				}
+			}
+			setLayerAlpha(presence());
+			super.update(deltaSeconds, mouseX, mouseY);
+		}
+
+		/** Dim layer + scaled dialog frame shared by all modals. */
+		protected void renderChrome(GuiGraphics graphics, float radius) {
+			float presence = presence();
+			if (presence <= 0.01F) {
+				return;
+			}
+			Render.rect(graphics, 0.0F, 0.0F, viewWidth, viewHeight, Render.alpha(0x000000, 0.55F * presence));
+			UiTheme theme = UiTheme.get();
+			float scale = 0.96F + 0.04F * Anim.easeOutQuint(presence);
+			graphics.pose().pushMatrix();
+			graphics.pose().translate(centerX(), centerY());
+			graphics.pose().scale(scale, scale);
+			graphics.pose().translate(-centerX(), -centerY());
+			Ui.window(graphics, x, y, width, height, radius, theme, presence);
+			graphics.pose().popMatrix();
+		}
+
+		/** Content is drawn inside the same scale transform as the chrome. */
+		protected void renderContent(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float presence = presence();
+			if (presence <= 0.01F) {
+				return;
+			}
+			float scale = 0.96F + 0.04F * Anim.easeOutQuint(presence);
+			graphics.pose().pushMatrix();
+			graphics.pose().translate(centerX(), centerY());
+			graphics.pose().scale(scale, scale);
+			graphics.pose().translate(-centerX(), -centerY());
+			renderChildren(graphics, mouseX, mouseY, deltaSeconds);
+			graphics.pose().popMatrix();
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (super.mouseClicked(mouseX, mouseY, button)) {
+				return true;
+			}
+			// Clicks inside the dialog are swallowed, clicks outside dismiss it.
+			if (contains(mouseX, mouseY)) {
+				return true;
+			}
+			close();
+			return true;
+		}
+	}
+
+	// ================================================================= dialog
+
+	/** Question with up to three answers. */
+	public static final class Dialog extends Modal {
+		private final String title;
+		private final List<String> lines;
+		private final List<Button> buttons = new ArrayList<>();
+
+		public Dialog(String title, List<String> lines) {
+			this.title = title;
+			this.lines = lines;
+		}
+
+		public static Dialog confirm(String title, String message, String confirmLabel, Runnable onConfirm) {
+			Dialog dialog = new Dialog(title, List.of(message));
+			dialog.add(confirmLabel, UiTheme.get().negative, dialog2 -> {
+				if (onConfirm != null) {
+					onConfirm.run();
+				}
+				dialog2.close();
+			});
+			dialog.add("Cancel", null, Modal::close);
+			return dialog;
+		}
+
+		public Dialog add(String label, Integer color, Consumer<Dialog> action) {
+			Button button = new Button(label, color == null ? Button.Variant.GHOST : Button.Variant.SOFT,
+					color == null ? UiTheme.get().accent : color, () -> action.accept(this));
+			buttons.add(button);
+			return this;
+		}
+
+		@Override
+		public void update(float deltaSeconds, float mouseX, float mouseY) {
+			super.update(deltaSeconds, mouseX, mouseY);
+			float buttonWidth = 96.0F;
+			float total = buttons.size() * buttonWidth + Math.max(0, buttons.size() - 1) * 8.0F;
+			float startX = x + (width - total) * 0.5F;
+			float buttonY = y + height - 34.0F;
+			for (int i = 0; i < buttons.size(); i++) {
+				Button button = buttons.get(i);
+				button.setBounds(startX + i * (buttonWidth + 8.0F), buttonY, buttonWidth, 22.0F);
+				button.setLayerAlpha(presence());
+				button.update(deltaSeconds, mouseX, mouseY);
+			}
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float presence = presence();
+			if (presence <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			renderChrome(graphics, theme.radius);
+			graphics.pose().pushMatrix();
+			float scale = 0.96F + 0.04F * Anim.easeOutQuint(presence);
+			graphics.pose().translate(centerX(), centerY());
+			graphics.pose().scale(scale, scale);
+			graphics.pose().translate(-centerX(), -centerY());
+			Render.text(graphics, UiWidgets.font(), title, x + 18.0F, y + 16.0F, Render.alpha(theme.text, presence), false);
+			float cursor = y + 36.0F;
+			for (String line : lines) {
+				for (String wrapped : wrap(line, width - 36.0F)) {
+					Render.text(graphics, UiWidgets.font(), wrapped, x + 18.0F, cursor, Render.alpha(theme.textDim, presence), false);
+					cursor += 11.0F;
+				}
+			}
+			for (Button button : buttons) {
+				button.render(graphics, mouseX, mouseY, deltaSeconds);
+			}
+			graphics.pose().popMatrix();
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (isClosing()) {
+				return true;
+			}
+			return super.mouseClicked(mouseX, mouseY, button);
+		}
+
+		@Override
+		public boolean mouseReleased(float mouseX, float mouseY, int button) {
+			boolean handled = false;
+			for (Button entry : buttons) {
+				handled |= entry.mouseReleased(mouseX, mouseY, button);
+			}
+			return handled;
+		}
+
+		static List<String> wrap(String text, float maxWidth) {
+			List<String> result = new ArrayList<>();
+			if (text == null || text.isEmpty()) {
+				result.add("");
+				return result;
+			}
+			StringBuilder line = new StringBuilder();
+			for (String word : text.split(" ")) {
+				String candidate = line.length() == 0 ? word : line + " " + word;
+				if (UiWidgets.font().width(candidate) > maxWidth && line.length() > 0) {
+					result.add(line.toString());
+					line = new StringBuilder(word);
+				} else {
+					line = new StringBuilder(candidate);
+				}
+			}
+			result.add(line.toString());
+			return result;
+		}
+	}
+
+	// ============================================================ text prompt
+
+	/** Single-line text editor with live preview and enter/escape support. */
+	public static final class TextPrompt extends Modal {
+		private final String title;
+		private final String hint;
+		private final EditBox box;
+		private final Consumer<String> onAccept;
+		private final float initialWidth;
+
+		public TextPrompt(String title, String hint, String initial, int maxLength, Consumer<String> onAccept, EditBox box) {
+			this.title = title;
+			this.hint = hint;
+			this.box = box;
+			this.onAccept = onAccept;
+			this.initialWidth = Math.max(240.0F, UiWidgets.font().width(initial) + 90.0F);
+			this.box.setValue(initial == null ? "" : initial);
+			this.box.setMaxLength(Math.max(1, maxLength));
+		}
+
+		public float preferredWidth() {
+			return Math.min(420.0F, initialWidth);
+		}
+
+		public void place(float centerX, float centerY) {
+			float boxWidth = preferredWidth();
+			float boxHeight = 116.0F;
+			setBounds(centerX - boxWidth * 0.5F, centerY - boxHeight * 0.5F, boxWidth, boxHeight);
+			box.setX(Math.round(x + 16.0F));
+			box.setY(Math.round(y + 44.0F));
+			box.setWidth(Math.round(boxWidth - 32.0F));
+		}
+
+		public void accept() {
+			if (onAccept != null) {
+				onAccept.accept(box.getValue());
+			}
+			close();
+		}
+
+		public EditBox box() {
+			return box;
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (isClosing()) {
+				return true;
+			}
+			return super.mouseClicked(mouseX, mouseY, button);
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float presence = presence();
+			if (presence <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			renderChrome(graphics, theme.radius);
+			graphics.pose().pushMatrix();
+			float scale = 0.96F + 0.04F * Anim.easeOutQuint(presence);
+			graphics.pose().translate(centerX(), centerY());
+			graphics.pose().scale(scale, scale);
+			graphics.pose().translate(-centerX(), -centerY());
+			Render.text(graphics, UiWidgets.font(), title, x + 16.0F, y + 14.0F, Render.alpha(theme.text, presence), false);
+			Render.roundedRect(graphics, x + 16.0F, y + 42.0F, width - 32.0F, 20.0F, 8.0F,
+					Render.alpha(theme.track, presence));
+			Render.ring(graphics, x + 16.0F, y + 42.0F, width - 32.0F, 20.0F, 8.0F, 1.0F,
+					Render.alpha(theme.accent, presence * 0.6F));
+			if (box.getValue().isEmpty()) {
+				Render.text(graphics, UiWidgets.font(), hint, x + 22.0F, y + 48.0F,
+						Render.alpha(theme.textFaint, presence), false);
+			}
+			Render.text(graphics, UiWidgets.font(), "Enter to apply  ·  Escape to cancel", x + 16.0F, y + 70.0F,
+					Render.alpha(theme.textFaint, presence), false);
+			graphics.pose().popMatrix();
+		}
+
+	}
+
+	// ============================================================ colour picker
+
+	/** Hue/saturation/value picker with an alpha slider, hex field and presets. */
+	public static final class ColorPicker extends Modal {
+		private static final int[] PRESETS = {
+				0xFF7C5CFF, 0xFF4FC3F7, 0xFF57D98A, 0xFFF2B23E,
+				0xFFF0686A, 0xFFF06292, 0xFFFFFFFF, 0xFF8B8FA3
+		};
+
+		private final Setting.Color setting;
+		private final int originalValue;
+		private int hueColor;
+		private float hue;
+		private float saturation;
+		private float value;
+		private float alphaValue;
+		private boolean draggingSquare;
+		private boolean draggingHue;
+		private boolean draggingAlpha;
+		private EditBox hexBox;
+
+		public ColorPicker(Setting.Color setting) {
+			this.setting = setting;
+			this.originalValue = setting.get();
+			float[] hsv = Render.toHsv(originalValue);
+			this.hue = hsv[0];
+			this.saturation = hsv[1];
+			this.value = hsv[2];
+			this.alphaValue = Render.alphaOf(originalValue) / 255.0F;
+			this.hueColor = Render.fromHsv(hue, 1.0F, 1.0F);
+		}
+
+		public void attachHexBox(EditBox box) {
+			this.hexBox = box;
+			box.setValue(hex());
+		}
+
+		public void place(float centerX, float centerY) {
+			float boxWidth = 260.0F;
+			float boxHeight = 232.0F;
+			setBounds(centerX - boxWidth * 0.5F, centerY - boxHeight * 0.5F, boxWidth, boxHeight);
+			if (hexBox != null) {
+				hexBox.setX(Math.round(x + boxWidth - 92.0F));
+				hexBox.setY(Math.round(y + boxHeight - 34.0F));
+				hexBox.setWidth(78);
+			}
+		}
+
+		private float squareX() {
+			return x + 16.0F;
+		}
+
+		private float squareY() {
+			return y + 34.0F;
+		}
+
+		private float squareWidth() {
+			return width - 32.0F - 22.0F;
+		}
+
+		private float squareHeight() {
+			return 110.0F;
+		}
+
+		private String hex() {
+			return String.format("#%06X", currentColor() & 0xFFFFFF);
+		}
+
+		private int currentColor() {
+			int rgb = Render.fromHsv(hue, saturation, value) | 0xFF000000;
+			int alpha = Math.round(alphaValue * 255.0F);
+			return (rgb & 0xFFFFFF) | alpha << 24;
+		}
+
+		private void applyFromSquare(float mouseX, float mouseY) {
+			saturation = Anim.clamp01((mouseX - squareX()) / Math.max(1.0F, squareWidth()));
+			value = 1.0F - Anim.clamp01((mouseY - squareY()) / Math.max(1.0F, squareHeight()));
+			apply();
+		}
+
+		private void applyFromHue(float mouseY) {
+			hue = Anim.clamp01((mouseY - squareY()) / Math.max(1.0F, squareHeight()));
+			hueColor = Render.fromHsv(hue, 1.0F, 1.0F);
+			apply();
+		}
+
+		private void applyFromAlpha(float mouseY) {
+			alphaValue = 1.0F - Anim.clamp01((mouseY - squareY()) / Math.max(1.0F, squareHeight()));
+			apply();
+		}
+
+		private void apply() {
+			int color = currentColor();
+			setting.set(setting.alphaAllowed() ? color : (color | 0xFF000000));
+			if (hexBox != null) {
+				hexBox.setValue(hex());
+			}
+		}
+
+		@Override
+		public void update(float deltaSeconds, float mouseX, float mouseY) {
+			super.update(deltaSeconds, mouseX, mouseY);
+			if (draggingSquare) {
+				applyFromSquare(mouseX, mouseY);
+			} else if (draggingHue) {
+				applyFromHue(mouseY);
+			} else if (draggingAlpha) {
+				applyFromAlpha(mouseY);
+			}
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float presence = presence();
+			if (presence <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			renderChrome(graphics, theme.radius);
+			graphics.pose().pushMatrix();
+			float scale = 0.96F + 0.04F * Anim.easeOutQuint(presence);
+			graphics.pose().translate(centerX(), centerY());
+			graphics.pose().scale(scale, scale);
+			graphics.pose().translate(-centerX(), -centerY());
+
+			Render.text(graphics, UiWidgets.font(), setting.label, x + 16.0F, y + 14.0F,
+					Render.alpha(theme.text, presence), false);
+			Render.text(graphics, UiWidgets.font(), hex(), x + width - 100.0F, y + 14.0F,
+					Render.alpha(theme.textDim, presence), false);
+
+			// Saturation/value square: hue gradient with a white-to-transparent wash on top.
+			Render.roundedRectGradient(graphics, squareX(), squareY(), squareWidth(), squareHeight(), 8.0F,
+					Render.alpha(hueColor, presence), Render.alpha(0xFF000000, presence));
+			Render.horizontalGradient(graphics, squareX(), squareY(), squareWidth(), squareHeight(),
+					Render.alpha(0xFFFFFFFF, presence), Render.alpha(0xFFFFFFFF, 0.0F));
+			Render.ring(graphics, squareX(), squareY(), squareWidth(), squareHeight(), 8.0F, 1.0F,
+					Render.alpha(theme.outlineStrong, presence));
+			float markerX = squareX() + saturation * squareWidth();
+			float markerY = squareY() + (1.0F - value) * squareHeight();
+			Ui.knob(graphics, markerX, markerY, 4.0F, 0xFFFFFFFF, presence);
+
+			// Hue strip.
+			float hueX = squareX() + squareWidth() + 8.0F;
+			int bands = 24;
+			float bandHeight = squareHeight() / bands;
+			for (int i = 0; i < bands; i++) {
+				int color = Render.fromHsv(i / (float) bands, 1.0F, 1.0F);
+				Render.rect(graphics, hueX, squareY() + i * bandHeight, 12.0F, bandHeight + 0.6F,
+						Render.alpha(color, presence));
+			}
+			Render.ring(graphics, hueX, squareY(), 12.0F, squareHeight(), 6.0F, 1.0F,
+					Render.alpha(theme.outlineStrong, presence));
+			float hueMarkerY = squareY() + hue * squareHeight();
+			Render.roundedRect(graphics, hueX - 2.0F, hueMarkerY - 1.5F, 16.0F, 3.0F, 1.5F,
+					Render.alpha(0xFFFFFFFF, presence));
+
+			// Alpha strip.
+			if (setting.alphaAllowed()) {
+				float alphaY = squareY() + squareHeight() + 10.0F;
+				Render.roundedRect(graphics, squareX(), alphaY, squareWidth(), 12.0F, 6.0F,
+						Render.alpha(0xFF20202C, presence));
+				Render.horizontalGradient(graphics, squareX(), alphaY, squareWidth(), 12.0F,
+						Render.alpha(currentColor() | 0xFF000000, presence * 0.25F), Render.alpha(currentColor() | 0xFF000000, presence));
+				Render.ring(graphics, squareX(), alphaY, squareWidth(), 12.0F, 6.0F, 1.0F,
+						Render.alpha(theme.outlineStrong, presence));
+			}
+
+			// Presets.
+			float presetY = y + height - 66.0F;
+			for (int i = 0; i < PRESETS.length; i++) {
+				float presetX = x + 16.0F + i * 22.0F;
+				boolean hovered = mouseX >= presetX - 2.0F && mouseX <= presetX + 18.0F
+						&& mouseY >= presetY - 2.0F && mouseY <= presetY + 18.0F;
+				Render.roundedRect(graphics, presetX, presetY, 16.0F, 16.0F, 5.0F,
+						Render.alpha(PRESETS[i], presence));
+				Render.ring(graphics, presetX, presetY, 16.0F, 16.0F, 5.0F, hovered ? 1.6F : 1.0F,
+						Render.alpha(hovered ? 0xFFFFFFFF : theme.outlineStrong, presence));
+			}
+			Render.text(graphics, UiWidgets.font(), "Alpha", x + 16.0F, y + height - 30.0F,
+					Render.alpha(theme.textFaint, presence), false);
+			Render.text(graphics, UiWidgets.font(), "Right click a preset to reset", x + width - 130.0F, y + height - 30.0F,
+					Render.alpha(theme.textFaint, presence * 0.7F), false);
+			graphics.pose().popMatrix();
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (button != 0) {
+				return true;
+			}
+			if (hexBox != null && hexBox.isFocused()) {
+				setFocusedElsewhere();
+			}
+			if (mouseX >= squareX() && mouseX <= squareX() + squareWidth()
+					&& mouseY >= squareY() && mouseY <= squareY() + squareHeight()) {
+				draggingSquare = true;
+				applyFromSquare(mouseX, mouseY);
+				return true;
+			}
+			float hueX = squareX() + squareWidth() + 8.0F;
+			if (mouseX >= hueX && mouseX <= hueX + 12.0F && mouseY >= squareY() && mouseY <= squareY() + squareHeight()) {
+				draggingHue = true;
+				applyFromHue(mouseY);
+				return true;
+			}
+			if (setting.alphaAllowed()) {
+				float alphaY = squareY() + squareHeight() + 10.0F;
+				if (mouseX >= squareX() && mouseX <= squareX() + squareWidth() && mouseY >= alphaY && mouseY <= alphaY + 12.0F) {
+					draggingAlpha = true;
+					applyFromAlpha(mouseY);
+					return true;
+				}
+			}
+			float presetY = y + height - 66.0F;
+			for (int i = 0; i < PRESETS.length; i++) {
+				float presetX = x + 16.0F + i * 22.0F;
+				if (mouseX >= presetX && mouseX <= presetX + 16.0F && mouseY >= presetY && mouseY <= presetY + 16.0F) {
+					int preset = PRESETS[i] | 0xFF000000;
+					float[] hsv = Render.toHsv(setting.get());
+					hue = hsv[0];
+					saturation = hsv[1];
+					value = hsv[2];
+					hueColor = Render.fromHsv(hue, 1.0F, 1.0F);
+					if (hexBox != null) {
+						hexBox.setValue(hex());
+					}
+					return true;
+				}
+			}
+			return super.mouseClicked(mouseX, mouseY, button);
+		}
+
+		private void setFocusedElsewhere() {
+			net.minecraft.client.gui.screens.Screen screen = net.minecraft.client.Minecraft.getInstance().screen;
+			if (screen != null) {
+				screen.setFocused(null);
+			}
+		}
+
+		@Override
+		public boolean mouseDragged(float mouseX, float mouseY, int button, float deltaX, float deltaY) {
+			if (draggingSquare) {
+				applyFromSquare(mouseX, mouseY);
+				return true;
+			}
+			if (draggingHue) {
+				applyFromHue(mouseY);
+				return true;
+			}
+			if (draggingAlpha) {
+				applyFromAlpha(mouseY);
+				return true;
+			}
+			return super.mouseDragged(mouseX, mouseY, button, deltaX, deltaY);
+		}
+
+		@Override
+		public boolean mouseReleased(float mouseX, float mouseY, int button) {
+			if (button == 0 && (draggingSquare || draggingHue || draggingAlpha)) {
+				draggingSquare = false;
+				draggingHue = false;
+				draggingAlpha = false;
+				return true;
+			}
+			return super.mouseReleased(mouseX, mouseY, button);
+		}
+
+		/** Called by the "Reset" button. */
+		public void resetToOriginal() {
+			setting.set(originalValue);
+			float[] hsv = Render.toHsv(originalValue);
+			hue = hsv[0];
+			saturation = hsv[1];
+			value = hsv[2];
+			hueColor = Render.fromHsv(hue, 1.0F, 1.0F);
+			alphaValue = Render.alphaOf(originalValue) / 255.0F;
+			if (hexBox != null) {
+				hexBox.setValue(hex());
+			}
+		}
+
+	}
+
+	/**
+	 * Builds the colour picker with its hex field wired up.
+	 *
+	 * @param registerInput callback that registers the text field on the *modal* layer, so it is
+	 *                      drawn above the dimming layer instead of behind it
+	 */
+	public static ColorPicker colorPicker(Setting.Color setting, Consumer<EditBox> registerInput) {
+		ColorPicker picker = new ColorPicker(setting);
+		EditBox hexBox = new EditBox(net.minecraft.client.Minecraft.getInstance().font, 0, 0, 78, 16,
+				Component.literal(setting.label));
+		hexBox.setBordered(false);
+		hexBox.setTextColor(0xFFF4F5FA);
+		hexBox.setMaxLength(9);
+		hexBox.setResponder(value -> {
+			String text = value.trim();
+			if (text.startsWith("#")) {
+				text = text.substring(1);
+			}
+			if (text.length() == 6 || text.length() == 8) {
+				try {
+					int parsed = (int) Long.parseLong(text, 16);
+					if (text.length() == 6) {
+						parsed |= 0xFF000000;
+					}
+					setting.set(parsed);
+				} catch (NumberFormatException ignored) {
+					// still typing
+				}
+			}
+		});
+		picker.attachHexBox(hexBox);
+		registerInput.accept(hexBox);
+		return picker;
 	}
 }
 ```
@@ -6282,62 +8532,141 @@ package dev.chaosutils.gui;
 import dev.chaosutils.feature.qol.ThemeModule;
 import dev.chaosutils.util.Render;
 
-/** Cached palette derived from the theme settings; rebuilt only when a value changes. */
+/**
+ * Cached design tokens of the ChaosUtils interface.
+ *
+ * <p>Every colour the interface uses is derived here from the live theme settings, so the whole
+ * look can be re-tinted from a single place and the click GUI can never end up with a colour that
+ * does not exist. The instance is rebuilt whenever a theme setting changes
+ * ({@link #invalidate()}), never per frame.
+ */
 public final class UiTheme {
+	// ------------------------------------------------------------------ accent
 	public final int accent;
+	public final int accentBright;
 	public final int accentSoft;
+	public final int accentFaint;
+	public final int accentGlow;
+	public final int onAccent;
+
+	// --------------------------------------------------------------- surfaces
 	public final int background;
-	public final int panel;
-	public final int panelAlt;
-	public final int panelHover;
+	public final int windowTop;
+	public final int windowBottom;
+	public final int sidebarTop;
+	public final int sidebarBottom;
+	public final int surface;
+	public final int surfaceHover;
+	public final int card;
+	public final int cardHover;
+	public final int cardActive;
+	public final int track;
+	public final int trackHover;
+
+	// ---------------------------------------------------------------- strokes
 	public final int outline;
+	public final int outlineSoft;
+	public final int outlineStrong;
+
+	// ------------------------------------------------------------------- text
 	public final int text;
 	public final int textDim;
 	public final int textFaint;
 	public final int positive;
 	public final int negative;
 	public final int warning;
+
+	// ---------------------------------------------------------------- metrics
 	public final float radius;
+	public final float radiusCard;
+	public final float radiusControl;
 	public final float animSpeed;
+	public final float shadowStrength;
+	public final float sidebarWidth;
+
+	// -------------------------------------------------------------- behaviour
+	public final boolean animations;
 	public final boolean tooltips;
 	public final boolean sounds;
 	public final boolean blur;
-	public final int backdropStyle;
-	public final float sidebarWidth;
+	public final boolean glow;
+	public final boolean windowShadow;
 	public final boolean compact;
 	public final boolean keybindHints;
+	public final int backdropStyle;
+
+	// ------------------------------------------------------- legacy aliases
+	/** Kept so HUD code that predates the redesign keeps working unchanged. */
+	public final int panel;
+	public final int panelAlt;
+	public final int panelHover;
 
 	private static UiTheme cached;
 
 	private UiTheme() {
-		accent = ThemeModule.accent.get();
-		accentSoft = Render.alpha(accent, 0.22F);
+		accent = ThemeModule.accent.get() | 0xFF000000;
+		accentBright = Render.mix(accent, 0xFFFFFFFF, 0.22F);
+		accentSoft = Render.alpha(accent, 0.30F);
+		accentFaint = Render.alpha(accent, 0.13F);
+		accentGlow = Render.alpha(accent, 0.55F);
+		onAccent = luminance(accent) > 0.62F ? 0xFF0B0B12 : 0xFFFFFFFF;
+
 		int tint = ThemeModule.backgroundColor.get();
-		float opacity = ThemeModule.backgroundOpacity.getFloat();
-		background = Render.alpha(tint, opacity);
-		panel = 0xF0171721;
-		panelAlt = 0xF01D1D2A;
-		panelHover = 0xF0252536;
-		outline = 0x40FFFFFF;
-		text = 0xFFF2F2F7;
-		textDim = 0xFF9E9EB3;
-		textFaint = 0xFF6C6C80;
-		positive = 0xFF63D471;
-		negative = 0xFFE05B5B;
-		warning = 0xFFF0B429;
-		radius = ThemeModule.cornerRadius.getFloat();
+		background = Render.alpha(tint, ThemeModule.backgroundOpacity.getFloat());
+
+		int shell = Render.mix(0xFF0B0B12, tint, 0.35F);
+		windowTop = Render.alpha(Render.mix(shell, 0xFFFFFFFF, 0.035F), 0.97F);
+		windowBottom = Render.alpha(Render.mix(shell, 0xFF000000, 0.18F), 0.97F);
+		sidebarTop = Render.alpha(Render.mix(shell, 0x00000000, 0.35F), 0.92F);
+		sidebarBottom = Render.alpha(Render.mix(shell, accent, 0.05F), 0.92F);
+
+		surface = 0xC8181826;
+		surfaceHover = 0xE0202032;
+		card = 0x9C1A1A27;
+		cardHover = 0xD8222233;
+		cardActive = Render.alpha(Render.mix(0xFF22223A, accent, 0.22F), 1.0F);
+		track = 0x662F2F45;
+		trackHover = 0x883A3A55;
+
+		outline = 0x1AFFFFFF;
+		outlineSoft = 0x12FFFFFF;
+		outlineStrong = 0x33FFFFFF;
+
+		text = 0xFFF4F5FA;
+		textDim = 0xFFA8AABF;
+		textFaint = 0xFF6E7086;
+		positive = 0xFF57D98A;
+		negative = 0xFFF0686A;
+		warning = 0xFFF2B23E;
+
+		radius = ThemeModule.cornerRadius.getFloat() + 6.0F;
+		radiusCard = ThemeModule.cornerRadius.getFloat() + 3.0F;
+		radiusControl = Math.max(3.0F, ThemeModule.cornerRadius.getFloat());
+
 		animSpeed = ThemeModule.animationSpeed.getFloat();
+		shadowStrength = ThemeModule.shadowStrength.getFloat();
+		sidebarWidth = ThemeModule.sidebarWidth.getFloat();
+
+		animations = ThemeModule.animations.get();
 		tooltips = ThemeModule.tooltips.get();
 		sounds = ThemeModule.guiSounds.get();
 		blur = ThemeModule.blur.get();
-		backdropStyle = ThemeModule.backgroundStyle.get();
-		sidebarWidth = ThemeModule.sidebarWidth.getFloat();
+		glow = ThemeModule.glow.get();
+		windowShadow = ThemeModule.windowShadow.get();
 		compact = ThemeModule.compactCards.get();
 		keybindHints = ThemeModule.showKeybindHints.get();
+		backdropStyle = ThemeModule.backgroundStyle.get();
+
+		panel = Render.alpha(Render.mix(shell, 0xFFFFFFFF, 0.05F), 0.92F);
+		panelAlt = Render.alpha(Render.mix(shell, 0xFFFFFFFF, 0.08F), 0.92F);
+		panelHover = Render.alpha(Render.mix(shell, 0xFFFFFFFF, 0.13F), 0.95F);
 	}
 
 	public static UiTheme get() {
 		if (cached == null) {
+			// Defensive: the tokens are read from the theme module, which is registered with the
+			// other features. Should anything ask for the theme earlier, register it on demand.
+			dev.chaosutils.feature.qol.ThemeModule.register();
 			cached = new UiTheme();
 		}
 		return cached;
@@ -6347,9 +8676,24 @@ public final class UiTheme {
 		cached = null;
 	}
 
-	/** Multiplier for animation speeds, respecting the user's preference. */
+	/**
+	 * Animation speed multiplier. With animations switched off this collapses to an instant
+	 * settle, so every widget keeps its single code path.
+	 */
 	public float speed(float base) {
-		return base * animSpeed;
+		return animations ? base * animSpeed : 2000.0F;
+	}
+
+	/** Content scale used to keep the interface readable on every GUI scale. */
+	public float density() {
+		return compact ? 0.92F : 1.0F;
+	}
+
+	private static float luminance(int color) {
+		float r = Render.red(color) / 255.0F;
+		float g = Render.green(color) / 255.0F;
+		float b = Render.blue(color) / 255.0F;
+		return 0.2126F * r + 0.7152F * g + 0.0722F * b;
 	}
 }
 ```
@@ -6359,66 +8703,158 @@ public final class UiTheme {
 ```java
 package dev.chaosutils.gui;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 import dev.chaosutils.config.Setting;
-import dev.chaosutils.core.Clipboard;
 import dev.chaosutils.util.Anim;
 import dev.chaosutils.util.InputUtil;
 import dev.chaosutils.util.Render;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
-import org.lwjgl.glfw.GLFW;
+import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.network.chat.Component;
+import net.minecraft.world.item.ItemStack;
 
-/** The ChaosUtils widget toolkit: every setting type has an animated control here. */
+/**
+ * The ChaosUtils control set.
+ *
+ * <p>Every control is drawn from the same vocabulary ({@link Ui}, {@link Render}), animates with
+ * shared timing and carries no state that survives its screen, so nothing can leak between two
+ * openings of the interface. Rows are built generically from {@link Setting} descriptions
+ * ({@link #forSetting}), which means a new feature setting can never be missing from the GUI.
+ */
 public final class UiWidgets {
 	private UiWidgets() {
 	}
 
-	private static Font fontOf(ChaosScreen screen) {
-		return screen.font();
+	public static Font font() {
+		return Minecraft.getInstance().font;
 	}
 
-	private static void label(GuiGraphics graphics, ChaosScreen screen, UiComponent component, String text, int color) {
-		Render.text(graphics, fontOf(screen), text, component.x(), component.y() + (component.height() - 8.0F) * 0.5F - 0.5F, color, false);
-	}
+	// =============================================================== primitives
 
-	private static void playClick(ChaosScreen screen, boolean on) {
-		screen.playClick(on);
-	}
-
-	// -------------------------------------------------------------------- button
-
+	/** Flat button with four visual weights and an animated hover glow. */
 	public static final class Button extends UiComponent {
-		private final ChaosScreen screen;
-		private final String label;
-		private final Runnable action;
-		private final int accent;
-		private boolean pressed;
+		public enum Variant {
+			/** Accent filled - one per screen. */
+			PRIMARY,
+			/** Transparent with a hairline, brightens on hover. */
+			GHOST,
+			/** Filled surface, the workhorse. */
+			SOFT,
+			/** Red tint for destructive actions. */
+			DANGER
+		}
 
-		public Button(ChaosScreen screen, String label, int accent, Runnable action) {
-			this.screen = screen;
+		private String label;
+		private Variant variant;
+		private Runnable action;
+		private int accent;
+		private boolean pressed;
+		private float padding = 8.0F;
+		private boolean leftAligned;
+		private ItemStack icon;
+
+		public Button(String label, Variant variant, int accent, Runnable action) {
 			this.label = label;
+			this.variant = variant;
 			this.accent = accent;
 			this.action = action;
 		}
 
+		public Button label(String value) {
+			this.label = value;
+			return this;
+		}
+
+		public void setAction(Runnable action) {
+			this.action = action;
+		}
+
+		public void setLeftAligned(boolean leftAligned) {
+			this.leftAligned = leftAligned;
+		}
+
+		public void setIcon(ItemStack icon) {
+			this.icon = icon;
+		}
+
+		public void setPadding(float padding) {
+			this.padding = padding;
+		}
+
+		@Override
+		public void update(float deltaSeconds, float mouseX, float mouseY) {
+			super.update(deltaSeconds, mouseX, mouseY);
+			if (!isHovered(mouseX, mouseY)) {
+				active.set(0.0F);
+			}
+		}
+
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			float offset = appearOffset();
+			float top = y + offset;
+			float hoverAmount = hover.get();
+			float press = active.get();
 			UiTheme theme = UiTheme.get();
-			float radius = theme.radius * 0.7F;
-			float drawY = pressed ? y + 1.0F : y;
-			int color = Render.mix(theme.panelAlt, Render.brighten(accent, 0.25F), hover.get() * 0.85F);
-			Render.roundedRect(graphics, x, drawY, width, height, radius, color);
-			Render.roundedBorder(graphics, x, drawY, width, height, radius, 1.0F, Render.alpha(accent, 0.45F), color);
-			int textColor = Render.mix(theme.text, 0xFFFFFFFF, hover.get());
-			Render.centeredText(graphics, fontOf(screen), label, x + width * 0.5F, drawY + (height - 8.0F) * 0.5F, textColor, false);
+			float radius = Math.min(theme.radiusControl, height * 0.5F);
+
+			int background;
+			int textColor;
+			switch (variant) {
+				case PRIMARY -> {
+					background = Render.mix(Render.scaleAlpha(accent, 0.92F), 0xFFFFFFFF, hoverAmount * 0.18F);
+					textColor = theme.onAccent;
+				}
+				case DANGER -> {
+					background = Render.mix(Render.alpha(theme.negative, 0.16F), Render.alpha(theme.negative, 0.30F), hoverAmount);
+					textColor = theme.negative;
+				}
+				case GHOST -> {
+					background = Render.mix(0x00000000, Render.alpha(0xFFFFFFFF, 0.09F), hoverAmount);
+					textColor = Render.mix(theme.textDim, theme.text, hoverAmount);
+				}
+				default -> {
+					background = Render.mix(Render.alpha(0xFFFFFFFF, 0.055F), Render.alpha(0xFFFFFFFF, 0.115F), hoverAmount);
+					textColor = Render.mix(theme.textDim, theme.text, hoverAmount);
+				}
+			}
+			if (theme.glow && variant == Variant.PRIMARY) {
+				Render.glow(graphics, centerX(), top + height * 0.5F, width * 0.75F, accent, 0.20F * hoverAmount * alpha);
+			}
+			Render.roundedRect(graphics, x, top, width, height, radius, Render.mix(0x00000000, background, alpha));
+			if (variant != Variant.PRIMARY) {
+				Render.ring(graphics, x, top, width, height, radius, 1.0F,
+						Render.mix(Render.alpha(theme.outlineSoft, alpha),
+								Render.alpha(variant == Variant.DANGER ? theme.negative : accent, alpha * 0.5F), hoverAmount));
+			}
+			float textY = top + (height - 8.0F) * 0.5F - press * 0.5F;
+			String shown = Render.ellipsize(font(), label == null ? "" : label, width - padding * 2.0F);
+			if (icon != null && !icon.isEmpty()) {
+				Ui.itemIcon(graphics, icon, x + padding + 6.0F, top + height * 0.5F, 0.7F, alpha);
+			}
+			if (leftAligned) {
+				Render.text(graphics, font(), shown, x + padding + (icon != null ? 16.0F : 0.0F), textY,
+						Render.alpha(textColor, alpha), false);
+			} else {
+				Render.centeredText(graphics, font(), shown, centerX(), textY, Render.alpha(textColor, alpha), false);
+			}
 		}
 
 		@Override
 		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (button == 0 && isHovered(mouseX, mouseY)) {
+			if (isHovered(mouseX, mouseY) && button == 0) {
 				pressed = true;
+				active.set(1.0F);
 				return true;
 			}
 			return false;
@@ -6426,10 +8862,10 @@ public final class UiWidgets {
 
 		@Override
 		public boolean mouseReleased(float mouseX, float mouseY, int button) {
-			if (pressed) {
+			if (button == 0 && pressed) {
 				pressed = false;
-				if (isHovered(mouseX, mouseY)) {
-					playClick(screen, true);
+				active.set(0.0F);
+				if (isHovered(mouseX, mouseY) && action != null) {
 					action.run();
 				}
 				return true;
@@ -6438,88 +8874,205 @@ public final class UiWidgets {
 		}
 	}
 
-	// -------------------------------------------------------------------- toggle
-
-	public static final class Toggle extends UiComponent {
-		private final ChaosScreen screen;
-		private final Setting.Toggle setting;
-
-		public Toggle(ChaosScreen screen, Setting.Toggle setting) {
-			this.screen = screen;
-			this.setting = setting;
-			this.active.snap(setting.get() ? 1.0F : 0.0F);
+	/** Square button that paints a custom glyph. */
+	public static final class IconButton extends UiComponent {
+		public interface Glyph {
+			void paint(GuiGraphics graphics, float centerX, float centerY, float alpha);
 		}
 
-		@Override
-		public void update(float deltaSeconds, float mouseX, float mouseY) {
-			super.update(deltaSeconds, mouseX, mouseY);
-			active.set(setting.get() ? 1.0F : 0.0F);
+		private final Glyph glyph;
+		private final Runnable action;
+		private int color;
+		private boolean round;
+
+		public IconButton(Glyph glyph, int color, Runnable action) {
+			this.glyph = glyph;
+			this.color = color;
+			this.action = action;
+		}
+
+		public IconButton round() {
+			this.round = true;
+			return this;
 		}
 
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
 			UiTheme theme = UiTheme.get();
-			label(graphics, screen, this, setting.label, Render.mix(theme.textDim, theme.text, hover.get()));
-			float switchWidth = 28.0F;
-			float switchHeight = 14.0F;
-			float sx = x + width - switchWidth;
-			float sy = y + (height - switchHeight) * 0.5F;
-			float on = active.get();
-			int track = Render.mix(0xFF3A3A48, theme.accent, on);
-			Render.roundedRect(graphics, sx, sy, switchWidth, switchHeight, switchHeight * 0.5F, track);
-			Render.roundedBorder(graphics, sx, sy, switchWidth, switchHeight, switchHeight * 0.5F, 1.0F,
-					Render.alpha(0xFFFFFFFF, 0.10F + hover.get() * 0.15F), track);
-			float knobSize = switchHeight - 4.0F;
-			float knobX = sx + 2.0F + on * (switchWidth - knobSize - 4.0F);
-			Render.roundedRect(graphics, knobX, sy + 2.0F, knobSize, knobSize, knobSize * 0.5F,
-					Render.mix(0xFFBFC2CF, 0xFFFFFFFF, on));
+			float hoverAmount = hover.get();
+			float radius = round ? height * 0.5F : Math.min(theme.radiusControl, height * 0.4F);
+			int background = Render.mix(Render.alpha(0xFFFFFFFF, 0.05F), Render.alpha(0xFFFFFFFF, 0.13F), hoverAmount);
+			if (hoverAmount > 0.02F && theme.glow) {
+				Render.glow(graphics, centerX(), centerY(), width * 0.9F, color, 0.22F * hoverAmount * alpha);
+			}
+			Render.roundedRect(graphics, x, y, width, height, radius, Render.mix(0x00000000, background, alpha));
+			if (glyph != null) {
+				glyph.paint(graphics, centerX(), centerY(), alpha * Math.max(0.55F, hoverAmount));
+			}
 		}
 
 		@Override
 		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (button == 0 && isHovered(mouseX, mouseY)) {
-				setting.toggle();
-				playClick(screen, setting.get());
+			if (isHovered(mouseX, mouseY) && button == 0) {
+				active.set(1.0F);
+				if (action != null) {
+					action.run();
+				}
 				return true;
 			}
 			return false;
 		}
 	}
 
-	// -------------------------------------------------------------------- slider
+	/** Animated on/off switch. */
+	public static final class Toggle extends UiComponent {
+		private final BooleanSupplier getter;
+		private final Consumer<Boolean> setter;
+		private final Anim.Value on = new Anim.Value(0.0F, 16.0F);
+		private int accent;
+		private float switchWidth = 26.0F;
+		private float switchHeight = 14.0F;
+		private boolean snapped;
 
-	public static final class Slider extends UiComponent {
-		private final ChaosScreen screen;
-		private final Setting.Number setting;
-		private boolean dragging;
-
-		public Slider(ChaosScreen screen, Setting.Number setting) {
-			this.screen = screen;
-			this.setting = setting;
+		public Toggle(BooleanSupplier getter, Consumer<Boolean> setter, int accent) {
+			this.getter = getter;
+			this.setter = setter;
+			this.accent = accent;
 		}
 
-		private float trackWidth() {
-			return width - 84.0F;
+		public Toggle size(float width, float height) {
+			this.switchWidth = width;
+			this.switchHeight = height;
+			return this;
+		}
+
+		@Override
+		public void update(float deltaSeconds, float mouseX, float mouseY) {
+			super.update(deltaSeconds, mouseX, mouseY);
+			boolean value = getter != null && getter.getAsBoolean();
+			on.set(value ? 1.0F : 0.0F);
+			if (!snapped) {
+				on.snap(value ? 1.0F : 0.0F);
+				snapped = true;
+			}
+			on.update(UiTheme.get().speed(16.0F));
+		}
+
+		private float switchX() {
+			return x + width - switchWidth;
+		}
+
+		private float switchY() {
+			return y + (height - switchHeight) * 0.5F;
 		}
 
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
 			UiTheme theme = UiTheme.get();
-			label(graphics, screen, this, setting.label, Render.mix(theme.textDim, theme.text, hover.get()));
-			float tw = Math.max(20.0F, trackWidth());
-			float tx = x + width - tw;
-			float fraction = (float) setting.fraction();
+			float amount = on.get();
+			float sx = switchX();
+			float sy = switchY() + appearOffset();
+			float hoverAmount = hover.get();
+			int track = Render.mix(Render.alpha(theme.track, alpha),
+					Render.alpha(Render.mix(accent, 0xFFFFFFFF, hoverAmount * 0.12F), alpha), amount);
+			if (amount > 0.05F && theme.glow) {
+				Render.glow(graphics, sx + switchWidth * 0.5F, sy + switchHeight * 0.5F, switchWidth * 1.1F, accent,
+						0.30F * amount * alpha);
+			}
+			Render.roundedRect(graphics, sx, sy, switchWidth, switchHeight, switchHeight * 0.5F, track);
+			Render.ring(graphics, sx, sy, switchWidth, switchHeight, switchHeight * 0.5F, 1.0F,
+					Render.alpha(theme.outline, alpha));
+			float knobRadius = switchHeight * 0.5F - 1.6F;
+			float travel = switchWidth - switchHeight;
+			float knobX = sx + switchHeight * 0.5F + travel * Anim.easeOutQuint(amount);
+			Ui.knob(graphics, knobX, sy + switchHeight * 0.5F, knobRadius,
+					Render.mix(0xFFD7D8E4, 0xFFFFFFFF, amount), alpha);
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (isHovered(mouseX, mouseY) && button == 0) {
+				flip();
+				return true;
+			}
+			if (isHovered(mouseX, mouseY) && button == 1) {
+				// Right click resets the bound setting through the row below (handled there).
+				return false;
+			}
+			return false;
+		}
+
+		/** Flips the bound value; also used by the surrounding row. */
+		public void flip() {
+			if (setter != null && getter != null) {
+				setter.accept(!getter.getAsBoolean());
+			}
+		}
+	}
+
+	/** Row with a label, a value and a draggable track - used for every numeric setting. */
+	public static final class Slider extends UiComponent {
+		private final Setting.Number setting;
+		private boolean dragging;
+		private float trackHeight = 4.0F;
+
+		public Slider(Setting.Number setting) {
+			this.setting = setting;
+		}
+
+		private float trackX() {
+			return x + 2.0F;
+		}
+
+		private float trackWidth() {
+			return width - 4.0F;
+		}
+
+		private float trackY() {
+			return y + height - 9.0F;
+		}
+
+		private float fraction() {
+			return (float) Anim.clamp01((float) setting.fraction());
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			float offset = appearOffset();
+			float valueAmount = fraction();
+			float hoverAmount = Math.max(hover.get(), dragging ? 1.0F : 0.0F);
+			int labelColor = Render.mix(theme.textDim, theme.text, hoverAmount * 0.8F);
+			Render.text(graphics, font(), setting.label, x, y + offset, Render.alpha(labelColor, alpha), false);
 			String value = setting.display();
-			int valueWidth = fontOf(screen).width(value);
-			Render.text(graphics, fontOf(screen), value, x + width - tw - valueWidth - 8.0F,
-					y + (height - 8.0F) * 0.5F - 0.5F, Render.mix(theme.textFaint, theme.text, hover.get()), false);
-			float ty = y + height * 0.5F - 2.0F;
-			Render.roundedRect(graphics, tx, ty, tw, 4.0F, 2.0F, 0xFF3A3A48);
-			Render.roundedRect(graphics, tx, ty, tw * fraction, 4.0F, 2.0F, theme.accent);
-			float knobSize = dragging || hover.get() > 0.4F ? 11.0F : 9.0F;
-			float knobX = tx + tw * fraction;
-			Render.roundedRect(graphics, knobX - knobSize * 0.5F, y + height * 0.5F - knobSize * 0.5F, knobSize, knobSize,
-					knobSize * 0.5F, Render.brighten(theme.accent, 0.35F));
+			Render.text(graphics, font(), value, right() - font().width(value), y + offset,
+					Render.alpha(Render.mix(theme.textFaint, theme.accent, hoverAmount), alpha), false);
+
+			float ty = trackY() + offset;
+			Render.roundedRect(graphics, trackX(), ty, trackWidth(), trackHeight, trackHeight * 0.5F,
+					Render.mix(0x00000000, Render.alpha(theme.trackHover, alpha), 1.0F));
+			float filled = Math.max(trackHeight, trackWidth() * valueAmount);
+			int fill = Render.mix(theme.accent, theme.accentBright, hoverAmount);
+			if (theme.glow && hoverAmount > 0.05F) {
+				Render.glow(graphics, trackX() + filled, ty + trackHeight * 0.5F, 16.0F + hoverAmount * 6.0F, theme.accent,
+						0.35F * hoverAmount * alpha);
+			}
+			Render.roundedRect(graphics, trackX(), ty, filled, trackHeight, trackHeight * 0.5F, Render.alpha(fill, alpha));
+			// Knob grows slightly while dragging, which is the whole trick to make sliders feel alive.
+			float knobRadius = 3.4F + hoverAmount * 1.4F + (dragging ? 0.8F : 0.0F);
+			Ui.knob(graphics, trackX() + filled, ty + trackHeight * 0.5F, knobRadius, 0xFFFFFFFF, alpha);
 		}
 
 		@Override
@@ -6529,12 +9082,11 @@ public final class UiWidgets {
 			}
 			if (button == 1) {
 				setting.reset();
-				playClick(screen, false);
 				return true;
 			}
 			if (button == 0) {
-				apply(mouseX);
 				dragging = true;
+				applyFromMouse(mouseX);
 				return true;
 			}
 			return false;
@@ -6542,8 +9094,8 @@ public final class UiWidgets {
 
 		@Override
 		public boolean mouseDragged(float mouseX, float mouseY, int button, float deltaX, float deltaY) {
-			if (dragging) {
-				apply(mouseX);
+			if (dragging && button == 0) {
+				applyFromMouse(mouseX);
 				return true;
 			}
 			return false;
@@ -6551,7 +9103,7 @@ public final class UiWidgets {
 
 		@Override
 		public boolean mouseReleased(float mouseX, float mouseY, int button) {
-			if (dragging) {
+			if (dragging && button == 0) {
 				dragging = false;
 				return true;
 			}
@@ -6560,55 +9112,626 @@ public final class UiWidgets {
 
 		@Override
 		public boolean mouseScrolled(float mouseX, float mouseY, double amount) {
-			if (isHovered(mouseX, mouseY)) {
-				setting.nudge(amount > 0 ? 1 : -1);
+			if (!isHovered(mouseX, mouseY)) {
+				return false;
+			}
+			setting.nudge(amount > 0 ? 1 : -1);
+			return true;
+		}
+
+		private void applyFromMouse(float mouseX) {
+			float fraction = (mouseX - trackX()) / Math.max(1.0F, trackWidth());
+			setting.setFraction(Anim.clamp01(fraction));
+		}
+	}
+
+	/** Segmented control for option settings; falls back to a cycler when there are many options. */
+	public static final class Choice extends UiComponent {
+		private final Setting.Choice setting;
+		private final Anim.Value indicatorX = new Anim.Value(0.0F, 18.0F);
+		private final Anim.Value indicatorWidth = new Anim.Value(0.0F, 18.0F);
+		private boolean snapped;
+
+		public Choice(Setting.Choice setting) {
+			this.setting = setting;
+		}
+
+		private boolean segmented() {
+			String[] options = setting.options();
+			if (options.length == 0 || options.length > 4) {
+				return false;
+			}
+			int total = 0;
+			for (String option : options) {
+				total += font().width(option) + 14;
+			}
+			return total <= width * 0.62F;
+		}
+
+		@Override
+		public void update(float deltaSeconds, float mouseX, float mouseY) {
+			super.update(deltaSeconds, mouseX, mouseY);
+			if (segmented()) {
+				float[] bounds = segmentBounds();
+				indicatorX.set(bounds[0]);
+				indicatorWidth.set(bounds[1]);
+				if (!snapped) {
+					indicatorX.snap(bounds[0]);
+					indicatorWidth.snap(bounds[1]);
+					snapped = true;
+				}
+				indicatorX.update(UiTheme.get().speed(18.0F));
+				indicatorWidth.update(UiTheme.get().speed(18.0F));
+			}
+		}
+
+		/** @return {x, width} of the selected segment relative to the row. */
+		private float[] segmentBounds() {
+			String[] options = setting.options();
+			int totalWidth = 0;
+			for (String option : options) {
+				totalWidth += font().width(option) + 14;
+			}
+			float startX = right() - totalWidth;
+			int selected = Anim.clamp(setting.get(), 0, Math.max(0, options.length - 1));
+			float offset = startX;
+			for (int i = 0; i < selected; i++) {
+				offset += font().width(options[i]) + 14;
+			}
+			return new float[] {offset, font().width(options[selected]) + 14.0F};
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			float offset = appearOffset();
+			Render.text(graphics, font(), setting.label, x, y + offset,
+					Render.alpha(Render.mix(theme.textDim, theme.text, hover.get() * 0.8F), alpha), false);
+			String[] options = setting.options();
+			int selected = Anim.clamp(setting.get(), 0, Math.max(0, options.length - 1));
+			if (segmented()) {
+				float totalWidth = 0;
+				for (String option : options) {
+					totalWidth += font().width(option) + 14;
+				}
+				float startX = right() - totalWidth;
+				float controlY = y + offset + (height - 18.0F) * 0.5F;
+				Render.roundedRect(graphics, startX, controlY, totalWidth, 18.0F, 9.0F,
+						Render.alpha(theme.track, alpha * 0.7F));
+				Render.roundedRect(graphics, indicatorX.get(), controlY, indicatorWidth.get(), 18.0F, 9.0F,
+						Render.alpha(Render.mix(theme.accent, theme.accentBright, hover.get() * 0.3F), alpha));
+				float cursor = startX;
+				for (int i = 0; i < options.length; i++) {
+					int textColor = i == selected ? theme.onAccent : Render.mix(theme.textDim, theme.text, hover.get() * 0.6F);
+					Render.centeredText(graphics, font(), options[i], cursor + (font().width(options[i]) + 14) * 0.5F,
+							controlY + 5.0F, Render.alpha(textColor, alpha), false);
+					cursor += font().width(options[i]) + 14;
+				}
+			} else {
+				String value = setting.display();
+				float chipWidth = Math.min(width * 0.55F, font().width(value) + 26.0F);
+				float chipX = right() - chipWidth;
+				float controlY = y + offset + (height - 17.0F) * 0.5F;
+				Render.roundedRect(graphics, chipX, controlY, chipWidth, 17.0F, 8.5F,
+						Render.mix(Render.alpha(theme.track, alpha), Render.alpha(theme.accent, alpha * 0.5F), hover.get()));
+				Render.centeredText(graphics, font(), Render.ellipsize(font(), value, chipWidth - 16.0F),
+						chipX + chipWidth * 0.5F, controlY + 4.5F,
+						Render.alpha(Render.mix(theme.text, 0xFFFFFFFF, hover.get()), alpha), false);
+				Ui.chevron(graphics, chipX + chipWidth - 8.0F, controlY + 8.5F, 5.0F, hover.get() > 0.5F ? 0.0F : -180.0F,
+						Render.alpha(theme.textFaint, alpha));
+			}
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (!isHovered(mouseX, mouseY)) {
+				return false;
+			}
+			if (button == 1) {
+				setting.reset();
+				return true;
+			}
+			if (button != 0) {
+				return false;
+			}
+			if (segmented()) {
+				String[] options = setting.options();
+				int totalWidth = 0;
+				for (String option : options) {
+					totalWidth += font().width(option) + 14;
+				}
+				float cursor = right() - totalWidth;
+				for (int i = 0; i < options.length; i++) {
+					float segmentWidth = font().width(options[i]) + 14;
+					if (mouseX >= cursor && mouseX <= cursor + segmentWidth) {
+						setting.set(i);
+						return true;
+					}
+					cursor += segmentWidth;
+				}
+			}
+			setting.cycle(1);
+			return true;
+		}
+	}
+
+	/** Colour swatch that opens the picker. */
+	public static final class ColorField extends UiComponent {
+		private final Setting.Color setting;
+		private final ChaosScreen screen;
+
+		public ColorField(Setting.Color setting, ChaosScreen screen) {
+			this.setting = setting;
+			this.screen = screen;
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			float offset = appearOffset();
+			Render.text(graphics, font(), setting.label, x, y + offset,
+					Render.alpha(Render.mix(theme.textDim, theme.text, hover.get() * 0.8F), alpha), false);
+			float swatchHeight = 15.0F;
+			float swatchWidth = 30.0F;
+			float swatchX = right() - swatchWidth;
+			float swatchY = y + offset + (height - swatchHeight) * 0.5F;
+			String hex = String.format("#%06X", setting.get() & 0xFFFFFF);
+			Render.text(graphics, font(), hex, swatchX - 6.0F - font().width(hex), y + offset + (height - 8.0F) * 0.5F,
+					Render.alpha(theme.textFaint, alpha), false);
+			Render.roundedRect(graphics, swatchX, swatchY, swatchWidth, swatchHeight, 5.0F,
+					Render.mix(0x00000000, Render.alpha(setting.get() | 0xFF000000, alpha), 1.0F));
+			Render.ring(graphics, swatchX, swatchY, swatchWidth, swatchHeight, 5.0F, 1.0F,
+					Render.mix(Render.alpha(theme.outlineSoft, alpha),
+							Render.alpha(0xFFFFFFFF, alpha * 0.55F), hover.get()));
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (!isHovered(mouseX, mouseY)) {
+				return false;
+			}
+			if (button == 1) {
+				setting.reset();
+				return true;
+			}
+			if (button == 0 && screen != null) {
+				screen.openColorModal(setting);
 				return true;
 			}
 			return false;
 		}
+	}
 
-		private void apply(float mouseX) {
-			float tw = Math.max(20.0F, trackWidth());
-			float tx = x + width - tw;
-			setting.setFraction((mouseX - tx) / tw);
+	/** Hotkey field: click, press a key, done. */
+	public static final class KeyField extends UiComponent {
+		private final Setting.Key setting;
+		private boolean listening;
+		private int heldBefore;
+
+		public KeyField(Setting.Key setting) {
+			this.setting = setting;
+		}
+
+		public boolean isListening() {
+			return listening;
+		}
+
+		public void cancelListening() {
+			listening = false;
+		}
+
+		@Override
+		public void update(float deltaSeconds, float mouseX, float mouseY) {
+			super.update(deltaSeconds, mouseX, mouseY);
+			if (listening) {
+				int pressed = InputUtil.pollNewInput(heldBefore);
+				if (pressed == InputUtil.NO_KEY) {
+					heldBefore = InputUtil.currentlyHeld();
+				} else if (pressed == 256) {
+					listening = false;
+				} else {
+					setting.set(pressed);
+					listening = false;
+				}
+			}
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			float offset = appearOffset();
+			Render.text(graphics, font(), setting.label, x, y + offset,
+					Render.alpha(Render.mix(theme.textDim, theme.text, hover.get() * 0.8F), alpha), false);
+			String value = listening ? "press a key…" : InputUtil.keyName(setting.get());
+			float chipWidth = font().width(value) + 18.0F;
+			float chipX = right() - chipWidth;
+			float chipY = y + offset + (height - 17.0F) * 0.5F;
+			boolean highlight = listening || hover.get() > 0.3F;
+			Render.roundedRect(graphics, chipX, chipY, chipWidth, 17.0F, 8.5F,
+					Render.mix(Render.alpha(theme.track, alpha),
+							Render.alpha(listening ? theme.accent : 0xFFFFFFFF, alpha * (listening ? 0.45F : 0.12F)), highlight ? 1.0F : 0.0F));
+			if (listening) {
+				Render.ring(graphics, chipX, chipY, chipWidth, 17.0F, 8.5F, 1.0F,
+						Render.alpha(theme.accent, alpha * (0.5F + 0.5F * Anim.pulse((float) (System.nanoTime() / 1.0E9), 1.4F))));
+			}
+			Render.centeredText(graphics, font(), value, chipX + chipWidth * 0.5F, chipY + 4.5F,
+					Render.alpha(listening ? theme.accent : theme.text, alpha), false);
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (!isHovered(mouseX, mouseY)) {
+				return false;
+			}
+			if (button == 1) {
+				setting.set(InputUtil.NO_KEY);
+				listening = false;
+				return true;
+			}
+			if (button == 0) {
+				listening = !listening;
+				heldBefore = InputUtil.currentlyHeld();
+				return true;
+			}
+			return false;
 		}
 	}
 
-	// -------------------------------------------------------------------- choice
-
-	public static final class Choice extends UiComponent {
+	/** Text setting: opens the shared text modal. */
+	public static final class TextField extends UiComponent {
+		private final Setting.Text setting;
 		private final ChaosScreen screen;
-		private final Setting.Choice setting;
-		private final Anim.Value flash = new Anim.Value(0.0F, 8.0F);
 
-		public Choice(ChaosScreen screen, Setting.Choice setting) {
+		public TextField(Setting.Text setting, ChaosScreen screen) {
+			this.setting = setting;
 			this.screen = screen;
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			float offset = appearOffset();
+			Render.text(graphics, font(), setting.label, x, y + offset,
+					Render.alpha(Render.mix(theme.textDim, theme.text, hover.get() * 0.8F), alpha), false);
+			float boxX = x + Math.min(width * 0.45F, font().width(setting.label) + 12.0F);
+			float boxWidth = right() - boxX;
+			float boxY = y + offset + (height - 17.0F) * 0.5F;
+			Render.roundedRect(graphics, boxX, boxY, boxWidth, 17.0F, 8.5F,
+					Render.mix(Render.alpha(theme.track, alpha), Render.alpha(0xFFFFFFFF, alpha * 0.10F), hover.get()));
+			String value = Render.ellipsize(font(), setting.get(), boxWidth - 16.0F);
+			Render.text(graphics, font(), value, boxX + 8.0F, boxY + 4.5F, Render.alpha(theme.text, alpha), false);
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (!isHovered(mouseX, mouseY) || screen == null) {
+				return false;
+			}
+			if (button == 1) {
+				setting.reset();
+				return true;
+			}
+			if (button == 0) {
+				screen.openTextModal(setting.label, setting.get(), setting.maxLength(), setting::set);
+				return true;
+			}
+			return false;
+		}
+	}
+
+	/** Position setting: the actual pinning happens in the HUD editor. */
+	public static final class PositionField extends UiComponent {
+		private final String label;
+		private final Runnable openEditor;
+
+		public PositionField(String label, Runnable openEditor) {
+			this.label = label;
+			this.openEditor = openEditor;
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			float offset = appearOffset();
+			Render.text(graphics, font(), label, x, y + offset,
+					Render.alpha(Render.mix(theme.textDim, theme.text, hover.get() * 0.8F), alpha), false);
+			String value = "open HUD editor";
+			float chipWidth = font().width(value) + 16.0F;
+			float chipX = right() - chipWidth;
+			float chipY = y + offset + (height - 16.0F) * 0.5F;
+			Render.roundedRect(graphics, chipX, chipY, chipWidth, 16.0F, 8.0F,
+					Render.mix(Render.alpha(theme.track, alpha), Render.alpha(theme.accent, alpha * 0.45F), hover.get()));
+			Render.centeredText(graphics, font(), value, chipX + chipWidth * 0.5F, chipY + 4.0F,
+					Render.alpha(Render.mix(theme.textDim, 0xFFFFFFFF, hover.get()), alpha), false);
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (isHovered(mouseX, mouseY) && button == 0 && openEditor != null) {
+				openEditor.run();
+				return true;
+			}
+			return false;
+		}
+	}
+
+	/** Action setting (a one-shot button described by the module). */
+	public static final class ActionField extends UiComponent {
+		private final Setting<?> setting;
+
+		public ActionField(Setting<?> setting) {
 			this.setting = setting;
 		}
 
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
 			UiTheme theme = UiTheme.get();
-			label(graphics, screen, this, setting.label, Render.mix(theme.textDim, theme.text, hover.get()));
-			String value = setting.display();
-			float boxWidth = Math.max(74.0F, fontOf(screen).width(value) + 24.0F);
-			float bx = x + width - boxWidth;
-			int background = Render.mix(theme.panelAlt, theme.panelHover, hover.get());
-			background = Render.mix(background, theme.accent, flash.get() * 0.35F);
-			Render.roundedRect(graphics, bx, y, boxWidth, height, theme.radius * 0.6F, background);
-			Render.centeredText(graphics, fontOf(screen), value, bx + boxWidth * 0.5F, y + (height - 8.0F) * 0.5F - 0.5F, theme.text, false);
-			Render.text(graphics, fontOf(screen), "‹", bx + 6.0F, y + (height - 8.0F) * 0.5F - 0.5F, theme.textFaint, false);
-			Render.text(graphics, fontOf(screen), "›", bx + boxWidth - 11.0F, y + (height - 8.0F) * 0.5F - 0.5F, theme.textFaint, false);
-			flash.update(deltaSeconds);
+			float offset = appearOffset();
+			boolean hovered = hover.get() > 0.05F;
+			Render.text(graphics, font(), setting.label, x, y + offset,
+					Render.alpha(Render.mix(theme.textDim, theme.text, hover.get() * 0.8F), alpha), false);
+			String hint = "run";
+			float chipWidth = font().width(hint) + 16.0F;
+			float chipX = right() - chipWidth;
+			float chipY = y + offset + (height - 16.0F) * 0.5F;
+			Render.roundedRect(graphics, chipX, chipY, chipWidth, 16.0F, 8.0F,
+					Render.mix(Render.alpha(theme.track, alpha), Render.alpha(theme.accent, alpha * 0.5F), hover.get()));
+			Render.centeredText(graphics, font(), hint, chipX + chipWidth * 0.5F, chipY + 4.0F,
+					Render.alpha(hovered ? 0xFFFFFFFF : theme.textDim, alpha), false);
 		}
 
 		@Override
 		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (isHovered(mouseX, mouseY) && (button == 0 || button == 1)) {
-				setting.cycle(button == 0 ? 1 : -1);
-				flash.snap(1.0F);
-				flash.set(0.0F);
-				playClick(screen, true);
+			if (isHovered(mouseX, mouseY) && button == 0) {
+				if (setting instanceof Setting.Action action) {
+					action.run();
+				}
+				return true;
+			}
+			return false;
+		}
+	}
+
+	// ============================================================ row assembly
+
+	/**
+	 * Builds the control row for a setting, or {@code null} for settings that are shown as part of
+	 * another control (the module toggle lives in the card header).
+	 */
+	public static UiComponent forSetting(Setting<?> setting, ChaosScreen screen) {
+		return switch (setting.kind()) {
+			case TOGGLE -> {
+				Setting.Toggle toggle = (Setting.Toggle) setting;
+				Toggle widget = new Toggle(toggle::get, toggle::set, UiTheme.get().accent);
+				widget.setTooltip(setting.description);
+				yield new LabeledSwitch(setting.label, widget);
+			}
+			case NUMBER -> new Slider((Setting.Number) setting);
+			case CHOICE -> new Choice((Setting.Choice) setting);
+			case COLOR -> new ColorField((Setting.Color) setting, screen);
+			case KEY -> new KeyField((Setting.Key) setting);
+			case TEXT -> new TextField((Setting.Text) setting, screen);
+			case POSITION -> new PositionField(setting.label,
+					screen == null ? null : screen::openHudEditor);
+			case ACTION -> new ActionField(setting);
+		};
+	}
+
+	/** Label on the left, switch on the right - the row shape used for every boolean setting. */
+	public static final class LabeledSwitch extends UiComponent {
+		private final String label;
+		private final Toggle toggle;
+
+		public LabeledSwitch(String label, Toggle toggle) {
+			this.label = label;
+			this.toggle = toggle;
+		}
+
+		@Override
+		public void update(float deltaSeconds, float mouseX, float mouseY) {
+			super.update(deltaSeconds, mouseX, mouseY);
+			toggle.setBounds(x + width - toggle.width(), y, toggle.width(), height);
+			toggle.setLayerAlpha(layerAlpha);
+			toggle.update(deltaSeconds, mouseX, mouseY);
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			Render.text(graphics, font(), Render.ellipsize(font(), label, width - toggle.width() - 12.0F),
+					x, y + appearOffset() + (height - 8.0F) * 0.5F,
+					Render.alpha(Render.mix(theme.textDim, theme.text, hover.get() * 0.8F), alpha), false);
+			toggle.render(graphics, mouseX, mouseY, deltaSeconds);
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (button == 1 && isHovered(mouseX, mouseY)) {
+				toggle.flip();
+				return true;
+			}
+			return toggle.mouseClicked(mouseX, mouseY, button) || super.mouseClicked(mouseX, mouseY, button);
+		}
+
+		@Override
+		public boolean mouseReleased(float mouseX, float mouseY, int button) {
+			return toggle.mouseReleased(mouseX, mouseY, button);
+		}
+	}
+
+	// ================================================================ container
+
+	/** Smoothly scrolling list with a fading scrollbar and clipped content. */
+	public static final class ScrollList extends UiComponent {
+		private final List<Float> baseY = new ArrayList<>();
+		private float scroll;
+		private float targetScroll;
+		private float contentHeight;
+		private float spacing = 6.0F;
+		private final Anim.Value barOpacity = new Anim.Value(0.0F, 6.0F);
+
+		public void setSpacing(float spacing) {
+			this.spacing = spacing;
+		}
+
+		public void clearItems() {
+			clearChildren();
+			baseY.clear();
+			targetScroll = 0.0F;
+			contentHeight = 0.0F;
+		}
+
+		public void addItem(UiComponent component) {
+			addChild(component);
+			baseY.add(0.0F);
+		}
+
+		/** Lays items out vertically; called after every rebuild. */
+		public void layout() {
+			List<UiComponent> items = children();
+			float cursor = 0.0F;
+			for (int i = 0; i < items.size(); i++) {
+				if (i < baseY.size()) {
+					baseY.set(i, cursor);
+				} else {
+					baseY.add(cursor);
+				}
+				cursor += items.get(i).height() + spacing;
+			}
+			contentHeight = items.isEmpty() ? 0.0F : Math.max(0.0F, cursor - spacing);
+			targetScroll = Anim.clamp(targetScroll, 0.0F, maxScroll());
+			scroll = Anim.clamp(scroll, 0.0F, maxScroll());
+		}
+
+		public float contentHeight() {
+			return contentHeight;
+		}
+
+		private float maxScroll() {
+			return Math.max(0.0F, contentHeight - height);
+		}
+
+		public void scrollTo(float value) {
+			targetScroll = Anim.clamp(value, 0.0F, maxScroll());
+		}
+
+		public float scroll() {
+			return scroll;
+		}
+
+		@Override
+		public void update(float deltaSeconds, float mouseX, float mouseY) {
+			appear.snap(1.0F);
+			List<UiComponent> items = children();
+			float before = scroll;
+			scroll = Anim.approach(scroll, targetScroll, UiTheme.get().speed(13.0F), deltaSeconds);
+			barOpacity.set(Math.abs(scroll - before) > 0.4F || isHovered(mouseX, mouseY) ? 1.0F : 0.0F);
+			barOpacity.update(UiTheme.get().speed(4.0F));
+			for (int i = 0; i < items.size(); i++) {
+				UiComponent item = items.get(i);
+				float base = i < baseY.size() ? baseY.get(i) : 0.0F;
+				item.setBounds(x, y + base - scroll, width, item.height());
+				item.setLayerAlpha(layerAlpha);
+				if (item.bottom() > y - 6.0F && item.y() < bottom() + 6.0F) {
+					item.update(deltaSeconds, mouseX, mouseY);
+				}
+			}
+			// Items may have changed height while animating (expanding cards), so the offsets are
+			// recomputed right away instead of one frame later.
+			layout();
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F || height <= 0.0F || width <= 0.0F) {
+				return;
+			}
+			Render.scissor(graphics, x, y, width, height);
+			for (UiComponent item : children()) {
+				if (item.isVisible() && item.bottom() > y - 6.0F && item.y() < bottom() + 6.0F) {
+					item.render(graphics, mouseX, mouseY, deltaSeconds);
+				}
+			}
+			Render.unscissor(graphics);
+			float max = maxScroll();
+			if (max > 1.0F && barOpacity.get() > 0.02F) {
+				float trackHeight = height - 4.0F;
+				float barHeight = Math.max(24.0F, trackHeight * (height / Math.max(height, contentHeight)));
+				float barY = y + 2.0F + (trackHeight - barHeight) * (scroll / max);
+				Render.roundedRect(graphics, right() - 3.0F, barY, 3.0F, barHeight, 1.5F,
+						Render.alpha(UiTheme.get().accent, 0.55F * barOpacity.get() * alpha));
+			}
+		}
+
+		/** Only items that are actually inside the viewport receive input. */
+		private boolean itemHandles(UiComponent item) {
+			return item.isVisible() && item.bottom() > y && item.y() < bottom();
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (!isHovered(mouseX, mouseY)) {
+				return false;
+			}
+			List<UiComponent> items = children();
+			for (int i = items.size() - 1; i >= 0; i--) {
+				UiComponent item = items.get(i);
+				if (itemHandles(item) && item.mouseClicked(mouseX, mouseY, button)) {
+					return true;
+				}
+			}
+			return false;
+		}
+
+		@Override
+		public boolean mouseReleased(float mouseX, float mouseY, int button) {
+			boolean handled = false;
+			for (UiComponent item : children()) {
+				if (itemHandles(item) && item.mouseReleased(mouseX, mouseY, button)) {
+					handled = true;
+				}
+			}
+			return handled;
+		}
+
+		@Override
+		public boolean mouseDragged(float mouseX, float mouseY, int button, float deltaX, float deltaY) {
+			for (UiComponent item : children()) {
+				if (itemHandles(item) && item.mouseDragged(mouseX, mouseY, button, deltaX, deltaY)) {
+					return true;
+				}
+			}
+			if (button == 0 && isHovered(mouseX, mouseY) && deltaY != 0.0F) {
+				targetScroll = Anim.clamp(targetScroll - (float) deltaY, 0.0F, maxScroll());
 				return true;
 			}
 			return false;
@@ -6616,461 +9739,599 @@ public final class UiWidgets {
 
 		@Override
 		public boolean mouseScrolled(float mouseX, float mouseY, double amount) {
-			if (isHovered(mouseX, mouseY)) {
-				setting.cycle(amount > 0 ? 1 : -1);
-				return true;
+			if (!isHovered(mouseX, mouseY)) {
+				return false;
 			}
-			return false;
-		}
-	}
-
-	// --------------------------------------------------------------------- color
-
-	public static final class ColorField extends UiComponent {
-		private final ChaosScreen screen;
-		private final Setting.Color setting;
-
-		public ColorField(ChaosScreen screen, Setting.Color setting) {
-			this.screen = screen;
-			this.setting = setting;
-		}
-
-		@Override
-		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			label(graphics, screen, this, setting.label, Render.mix(theme.textDim, theme.text, hover.get()));
-			float boxWidth = 78.0F;
-			float bx = x + width - boxWidth;
-			int background = Render.mix(theme.panelAlt, theme.panelHover, hover.get());
-			Render.roundedRect(graphics, bx, y, boxWidth, height, theme.radius * 0.6F, background);
-			int color = setting.get();
-			Render.roundedRect(graphics, bx + 4.0F, y + 3.0F, height - 6.0F, height - 6.0F, (height - 6.0F) * 0.3F, color | 0xFF000000);
-			Render.text(graphics, fontOf(screen), String.format("#%06X", color & 0xFFFFFF), bx + height + 1.0F,
-					y + (height - 8.0F) * 0.5F - 0.5F, theme.textDim, false);
-		}
-
-		@Override
-		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (isHovered(mouseX, mouseY)) {
-				if (button == 1) {
-					setting.reset();
-				} else {
-					screen.openColorPicker(setting);
-					playClick(screen, true);
+			for (UiComponent item : children()) {
+				if (itemHandles(item) && item.mouseScrolled(mouseX, mouseY, amount)) {
+					return true;
 				}
-				return true;
 			}
-			return false;
+			targetScroll = Anim.clamp(targetScroll - (float) amount * 32.0F, 0.0F, maxScroll());
+			return true;
+		}
+
+		@Override
+		public void reset() {
+			super.reset();
+			scroll = 0.0F;
+			targetScroll = 0.0F;
 		}
 	}
 
-	// ----------------------------------------------------------------------- key
+	/** Rounded search field around a vanilla text box (so IME, clipboard and selection work). */
+	public static final class SearchField extends UiComponent {
+		private final EditBox box;
+		private Runnable onClear;
 
-	public static final class KeyField extends UiComponent {
-		private final ChaosScreen screen;
-		private final Setting.Key setting;
-		private int lastPolled = InputUtil.NO_KEY;
+		public SearchField(EditBox box) {
+			this.box = box;
+		}
 
-		public KeyField(ChaosScreen screen, Setting.Key setting) {
-			this.screen = screen;
-			this.setting = setting;
+		public EditBox box() {
+			return box;
+		}
+
+		public void setOnClear(Runnable onClear) {
+			this.onClear = onClear;
+		}
+
+		public void place(float x, float y, float width, float height) {
+			setBounds(x, y, width, height);
+			box.setX(Math.round(x + 26.0F));
+			box.setY(Math.round(y + (height - 8.0F) * 0.5F));
 		}
 
 		@Override
 		public void update(float deltaSeconds, float mouseX, float mouseY) {
 			super.update(deltaSeconds, mouseX, mouseY);
-			if (!setting.isListening()) {
-				lastPolled = InputUtil.NO_KEY;
+			// Reserve room for the magnifier and the clear button.
+			box.setWidth(Math.round(width - (box.getValue().isEmpty() ? 36.0F : 52.0F)));
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
 				return;
 			}
-			int pressed = InputUtil.pollNewInput(lastPolled);
-			lastPolled = InputUtil.currentlyHeld();
-			if (pressed == InputUtil.NO_KEY) {
-				return;
-			}
-			if (pressed == GLFW.GLFW_KEY_ESCAPE || pressed == GLFW.GLFW_KEY_BACKSPACE) {
-				setting.stopListening();
-			} else if (pressed == GLFW.GLFW_KEY_DELETE) {
-				setting.set(InputUtil.NO_KEY);
+			UiTheme theme = UiTheme.get();
+			float focusAmount = box.isFocused() ? 1.0F : 0.0F;
+			focus.set(focusAmount);
+			focus.update(UiTheme.get().speed(14.0F));
+			float focusValue = focus.get();
+			float radius = Math.min(theme.radiusControl + 2.0F, height * 0.5F);
+			Render.roundedRect(graphics, x, y, width, height, radius,
+					Render.mix(Render.alpha(theme.track, alpha), Render.alpha(theme.surfaceHover, alpha), hover.get() * 0.6F));
+			if (focusValue > 0.02F) {
+				Render.ring(graphics, x, y, width, height, radius, 1.0F, Render.alpha(theme.accent, alpha * 0.7F * focusValue));
+				if (theme.glow) {
+					Render.glow(graphics, centerX(), centerY(), width * 0.6F, theme.accent, 0.12F * focusValue * alpha);
+				}
 			} else {
-				setting.set(pressed);
+				Render.ring(graphics, x, y, width, height, radius, 1.0F, Render.alpha(theme.outlineSoft, alpha));
 			}
-			playClick(screen, true);
-		}
-
-		@Override
-		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			label(graphics, screen, this, setting.label, Render.mix(theme.textDim, theme.text, hover.get()));
-			String value = setting.isListening() ? "press a key…" : setting.display();
-			float boxWidth = Math.max(70.0F, fontOf(screen).width(value) + 18.0F);
-			float bx = x + width - boxWidth;
-			int accent = setting.isListening() ? theme.warning : theme.accent;
-			int background = Render.mix(theme.panelAlt, theme.panelHover, hover.get());
-			Render.roundedRect(graphics, bx, y, boxWidth, height, theme.radius * 0.6F, background);
-			Render.roundedBorder(graphics, bx, y, boxWidth, height, theme.radius * 0.6F, 1.0F, Render.alpha(accent, 0.7F), background);
-			Render.centeredText(graphics, fontOf(screen), value, bx + boxWidth * 0.5F, y + (height - 8.0F) * 0.5F - 0.5F, theme.text, false);
+			// Magnifier glyph.
+			float glyphX = x + 10.0F;
+			float glyphY = centerY();
+			int glyphColor = Render.alpha(theme.textFaint, alpha);
+			Render.ring(graphics, glyphX - 5.0F, glyphY - 6.0F, 10.0F, 10.0F, 5.0F, 1.5F, glyphColor);
+			Render.line(graphics, glyphX + 3.2F, glyphY + 2.2F, glyphX + 6.2F, glyphY + 5.2F, 1.6F, glyphColor);
+			if (!box.getValue().isEmpty() && hover.get() > 0.05F) {
+				float clearX = right() - 14.0F;
+				Render.circle(graphics, clearX, centerY(), 6.0F, Render.alpha(theme.textFaint, alpha * 0.35F * hover.get()));
+				Render.line(graphics, clearX - 2.4F, centerY() - 2.4F, clearX + 2.4F, centerY() + 2.4F, 1.4F,
+						Render.alpha(0xFFFFFFFF, alpha * 0.8F));
+				Render.line(graphics, clearX + 2.4F, centerY() - 2.4F, clearX - 2.4F, centerY() + 2.4F, 1.4F,
+						Render.alpha(0xFFFFFFFF, alpha * 0.8F));
+			}
 		}
 
 		@Override
 		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (isHovered(mouseX, mouseY)) {
-				setting.listen();
-				return true;
+			if (!isHovered(mouseX, mouseY)) {
+				return false;
 			}
-			return false;
-		}
-	}
-
-	// ------------------------------------------------------------------ position
-
-	public static final class PositionField extends UiComponent {
-		private final ChaosScreen screen;
-		private final Setting.Position setting;
-
-		public PositionField(ChaosScreen screen, Setting.Position setting) {
-			this.screen = screen;
-			this.setting = setting;
-		}
-
-		@Override
-		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			label(graphics, screen, this, setting.label, Render.mix(theme.textDim, theme.text, hover.get()));
-			float boxWidth = 78.0F;
-			float bx = x + width - boxWidth;
-			int background = Render.mix(theme.panelAlt, theme.panelHover, hover.get());
-			Render.roundedRect(graphics, bx, y, boxWidth, height, theme.radius * 0.6F, background);
-			Render.centeredText(graphics, fontOf(screen), "Adjust", bx + boxWidth * 0.5F, y + (height - 8.0F) * 0.5F - 0.5F, theme.text, false);
-			float px = bx + 6.0F + setting.get().x() * 8.0F;
-			float py = y + height - 5.0F - setting.get().y() * 4.0F;
-			Render.rect(graphics, px, py, 3.0F, 3.0F, theme.accent);
-		}
-
-		@Override
-		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (isHovered(mouseX, mouseY)) {
-				if (button == 1) {
-					setting.reset();
-				} else {
-					screen.openHudEditor();
+			if (button == 0 && !box.getValue().isEmpty() && mouseX >= right() - 22.0F) {
+				box.setValue("");
+				if (onClear != null) {
+					onClear.run();
 				}
 				return true;
 			}
-			return false;
+			return button == 0;
 		}
 	}
 
-	// --------------------------------------------------------------------- action
+	/** Small caption used between groups of settings. */
+	public static final class SectionHeader extends UiComponent {
+		private final String text;
 
-	public static final class ActionField extends UiComponent {
-		private final ChaosScreen screen;
-		private final Setting.Action setting;
-
-		public ActionField(ChaosScreen screen, Setting.Action setting) {
-			this.screen = screen;
-			this.setting = setting;
+		public SectionHeader(String text) {
+			this.text = text;
 		}
 
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			label(graphics, screen, this, setting.label, Render.mix(theme.textDim, theme.text, hover.get()));
-			float boxWidth = 78.0F;
-			float bx = x + width - boxWidth;
-			int background = Render.mix(theme.panelAlt, Render.brighten(theme.accent, 0.1F), hover.get());
-			Render.roundedRect(graphics, bx, y, boxWidth, height, theme.radius * 0.6F, background);
-			Render.centeredText(graphics, fontOf(screen), "Run", bx + boxWidth * 0.5F, y + (height - 8.0F) * 0.5F - 0.5F, theme.text, false);
-		}
-
-		@Override
-		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (isHovered(mouseX, mouseY) && button == 0) {
-				playClick(screen, true);
-				setting.run();
-				return true;
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
 			}
-			return false;
+			UiTheme theme = UiTheme.get();
+			Ui.sectionLabel(graphics, font(), text, x, y + appearOffset() + 2.0F, theme.textFaint, alpha);
+			int labelWidth = font().width(text.toUpperCase(java.util.Locale.ROOT));
+			Ui.divider(graphics, x + labelWidth + 8.0F, y + appearOffset() + 6.0F, Math.max(0.0F, width - labelWidth - 8.0F),
+					theme, alpha);
 		}
 	}
 
-	// ---------------------------------------------------------------------- text
+	/** Small static text. */
+	public static final class Label extends UiComponent {
+		private String text;
+		private int color;
+		private boolean centered;
+		private boolean bold;
 
-	public static final class TextField extends UiComponent {
-		private final ChaosScreen screen;
-		private final Setting.Text setting;
+		public Label(String text, int color) {
+			this.text = text;
+			this.color = color;
+		}
 
-		public TextField(ChaosScreen screen, Setting.Text setting) {
-			this.screen = screen;
-			this.setting = setting;
+		public Label centered() {
+			this.centered = true;
+			return this;
+		}
+
+		public Label bold() {
+			this.bold = true;
+			return this;
+		}
+
+		public void setText(String text) {
+			this.text = text;
+		}
+
+		public void setColor(int color) {
+			this.color = color;
 		}
 
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			label(graphics, screen, this, setting.label, Render.mix(theme.textDim, theme.text, hover.get()));
-			String value = setting.display();
-			float boxWidth = Math.min(width * 0.55F, 160.0F);
-			float bx = x + width - boxWidth;
-			Render.roundedRect(graphics, bx, y, boxWidth, height, theme.radius * 0.6F, Render.mix(theme.panelAlt, theme.panelHover, hover.get()));
-			float maxText = boxWidth - 10.0F;
-			while (fontOf(screen).width(value) > maxText && value.length() > 3) {
-				value = value.substring(0, value.length() - 2) + "…";
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
 			}
-			Render.text(graphics, fontOf(screen), value, bx + 5.0F, y + (height - 8.0F) * 0.5F - 0.5F, theme.text, false);
-		}
-
-		@Override
-		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (isHovered(mouseX, mouseY)) {
-				if (button == 1) {
-					setting.reset();
+			String value = Render.ellipsize(font(), text, width);
+			int argb = Render.alpha(color, alpha);
+			if (centered) {
+				if (bold) {
+					Render.boldText(graphics, font(), value, centerX() - font().width(value) * 0.5F, y + appearOffset(), argb, false);
 				} else {
-					screen.openTextEditor(setting);
+					Render.centeredText(graphics, font(), value, centerX(), y + appearOffset(), argb, false);
 				}
-				return true;
+			} else if (bold) {
+				Render.boldText(graphics, font(), value, x, y + appearOffset(), argb, false);
+			} else {
+				Render.text(graphics, font(), value, x, y + appearOffset(), argb, false);
 			}
-			return false;
 		}
 	}
 
-	/** Copies fixed text to the clipboard; used for generated values (coordinates, IPs). */
-	public static final class CopyField extends UiComponent {
-		private final ChaosScreen screen;
-		private final java.util.function.Supplier<String> textSupplier;
+	/** Thin progress/status element used by the footer and by list screens. */
+	public static final class StatusChip extends UiComponent {
+		private final String text;
+		private int color;
+		private boolean pulsing;
 
-		public CopyField(ChaosScreen screen, String label, java.util.function.Supplier<String> textSupplier) {
-			this.screen = screen;
-			this.textSupplier = textSupplier;
-			this.setTooltip(label);
+		public StatusChip(String text, int color) {
+			this.text = text;
+			this.color = color;
+		}
+
+		public void setText(String text) {
+			this.text = text;
+		}
+
+		public void setColor(int color) {
+			this.color = color;
+		}
+
+		public void setPulsing(boolean pulsing) {
+			this.pulsing = pulsing;
 		}
 
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			Render.roundedRect(graphics, x, y, width, height, theme.radius * 0.6F, Render.mix(theme.panelAlt, theme.panelHover, hover.get()));
-			Render.centeredText(graphics, fontOf(screen), "Copy", x + width * 0.5F, y + (height - 8.0F) * 0.5F - 0.5F, theme.text, false);
-		}
-
-		@Override
-		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (isHovered(mouseX, mouseY) && button == 0) {
-				Clipboard.copyText(textSupplier.get());
-				playClick(screen, true);
-				return true;
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
 			}
-			return false;
+			UiTheme theme = UiTheme.get();
+			float pulse = pulsing ? 0.5F + 0.5F * Anim.pulse((float) (System.nanoTime() / 1.0E9), 2.0F) : 1.0F;
+			float dotRadius = 3.0F;
+			Ui.dot(graphics, x + dotRadius + 1.0F, centerY(), dotRadius,
+					Render.alpha(color, alpha * pulse));
+			Render.text(graphics, font(), Render.ellipsize(font(), text, width - 14.0F), x + 12.0F, centerY() - 4.0F,
+					Render.alpha(theme.textDim, alpha), false);
 		}
 	}
 
-	/** Creates the control matching a setting, laid out for a settings row. */
-	public static UiComponent forSetting(Setting<?> setting, ChaosScreen screen) {
+	/** Returns a vertical list of the settings of a module, wrapped in their rows. */
+	public static List<UiComponent> rowsFor(List<Setting<?>> settings, ChaosScreen screen, float width) {
+		List<UiComponent> rows = new ArrayList<>();
+		for (Setting<?> setting : settings) {
+			UiComponent row = forSetting(setting, screen);
+			if (row == null) {
+				continue;
+			}
+			row.setBounds(0.0F, 0.0F, width, rowHeight(setting));
+			row.setTooltip(setting.description);
+			rows.add(row);
+		}
+		return rows;
+	}
+
+	public static float rowHeight(Setting<?> setting) {
 		return switch (setting.kind()) {
-			case TOGGLE -> new Toggle(screen, (Setting.Toggle) setting);
-			case NUMBER -> new Slider(screen, (Setting.Number) setting);
-			case CHOICE -> new Choice(screen, (Setting.Choice) setting);
-			case COLOR -> new ColorField(screen, (Setting.Color) setting);
-			case KEY -> new KeyField(screen, (Setting.Key) setting);
-			case POSITION -> new PositionField(screen, (Setting.Position) setting);
-			case TEXT -> new TextField(screen, (Setting.Text) setting);
-			case ACTION -> new ActionField(screen, (Setting.Action) setting);
+			case NUMBER -> 26.0F;
+			case TOGGLE, CHOICE, COLOR, KEY, TEXT, POSITION, ACTION -> 22.0F;
 		};
 	}
 
-	// ------------------------------------------------------------------- popups
+}
+```
 
-	/** Modal editor for text settings, reusing a single {@link net.minecraft.client.gui.components.EditBox}. */
-	public static final class TextPopup extends UiComponent {
-		private final ChaosScreen screen;
-		private float buttonY;
+### `src/main/java/dev/chaosutils/gui/UiWindow.java`
 
-		public TextPopup(ChaosScreen screen) {
-			this.screen = screen;
-		}
+```java
+package dev.chaosutils.gui;
 
-		public void layout(float px, float py, float width, float height, net.minecraft.client.gui.components.EditBox input) {
-			setBounds(px, py, width, height);
-			if (input != null) {
-				input.setX(Math.round(px + 14.0F));
-				input.setY(Math.round(py + 34.0F));
-				input.setWidth(Math.round(width - 28.0F));
-			}
-			buttonY = py + height - 30.0F;
-		}
+import dev.chaosutils.config.ChaosConfig;
+import dev.chaosutils.util.Anim;
+import dev.chaosutils.util.Render;
+import net.minecraft.client.gui.GuiGraphics;
 
-		@Override
-		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			Render.shadowedPanel(graphics, x, y, width, height, theme.radius, theme.panel, theme.accent);
-			Render.roundedRect(graphics, x + 14.0F, y + 32.0F, width - 28.0F, 20.0F, 4.0F, 0xFF0E0E14);
-			renderButton(graphics, mouseX, mouseY, "Accept", x + width - 176.0F, buttonY, theme.accent);
-			renderButton(graphics, mouseX, mouseY, "Cancel", x + width - 88.0F, buttonY, 0xFF4A4A5A);
-		}
+/**
+ * The floating window every ChaosUtils screen lives in.
+ *
+ * <p>It owns the geometry, the drag/resize interaction and the position memory, so screens only
+ * describe their content. The window can be moved by its title bar (or any empty part of the
+ * header), resized from the bottom-right corner and its edges, and is kept on screen at all times.
+ * Double-clicking the title bar snaps it back to the centred default size.
+ */
+public final class UiWindow {
+	public static final float TITLE_HEIGHT = 34.0F;
+	public static final float MIN_WIDTH = 300.0F;
+	public static final float MIN_HEIGHT = 190.0F;
+	/** Distance from the window border that starts a resize drag. */
+	private static final float EDGE = 5.0F;
+	private static final float CORNER = 14.0F;
 
-		private void renderButton(GuiGraphics graphics, float mouseX, float mouseY, String label, float bx, float by, int accent) {
-			UiTheme theme = UiTheme.get();
-			boolean hovered = mouseX >= bx && mouseX <= bx + 80.0F && mouseY >= by && mouseY <= by + 20.0F;
-			int color = Render.mix(theme.panelAlt, Render.brighten(accent, 0.2F), hovered ? 0.9F : 0.15F);
-			Render.roundedRect(graphics, bx, by, 80.0F, 20.0F, 5.0F, color);
-			Render.centeredText(graphics, screen.font(), label, bx + 40.0F, by + 6.0F, theme.text, false);
-		}
+	private final String stateKey;
+	private float x;
+	private float y;
+	private float width;
+	private float height;
+	private float defaultWidth;
+	private float defaultHeight;
+	private int screenWidth;
+	private int screenHeight;
+	private boolean resizable = true;
 
-		@Override
-		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (button != 0) {
-				return false;
-			}
-			if (mouseX >= x + width - 176.0F && mouseX <= x + width - 96.0F && mouseY >= buttonY && mouseY <= buttonY + 20.0F) {
-				screen.closePopup(true);
-				return true;
-			}
-			if (mouseX >= x + width - 88.0F && mouseX <= x + width - 8.0F && mouseY >= buttonY && mouseY <= buttonY + 20.0F) {
-				screen.closePopup(false);
-				return true;
-			}
-			return contains(mouseX, mouseY);
+	private boolean dragging;
+	private boolean resizingWidth;
+	private boolean resizingHeight;
+	private float dragOffsetX;
+	private float dragOffsetY;
+	private float resizeStartWidth;
+	private float resizeStartHeight;
+	private float resizeStartX;
+	private float resizeStartY;
+	private boolean dirty;
+	private boolean resized;
+	private long lastClickTime;
+	private float lastClickX;
+	private float lastClickY;
+
+	private final Anim.Value appear = new Anim.Value(0.0F, 9.0F);
+	private final Anim.Value closeAnim = new Anim.Value(0.0F, 13.0F);
+	private final Anim.Value gripHover = new Anim.Value(0.0F, 14.0F);
+	private boolean fadingOut;
+
+	public UiWindow(String stateKey, float defaultWidth, float defaultHeight) {
+		this.stateKey = stateKey;
+		this.defaultWidth = defaultWidth;
+		this.defaultHeight = defaultHeight;
+		this.width = defaultWidth;
+		this.height = defaultHeight;
+	}
+
+	// -------------------------------------------------------------- lifecycle
+
+	/** Places the window: remembered position when available, centred otherwise. */
+	public void open(int screenWidth, int screenHeight) {
+		this.screenWidth = screenWidth;
+		this.screenHeight = screenHeight;
+		float maxWidth = screenWidth - 24.0F;
+		float maxHeight = screenHeight - 24.0F;
+		this.defaultWidth = Math.min(defaultWidth, maxWidth);
+		this.defaultHeight = Math.min(defaultHeight, maxHeight);
+		float storedWidth = ChaosConfig.uiFloat(stateKey + ".width", defaultWidth);
+		float storedHeight = ChaosConfig.uiFloat(stateKey + ".height", defaultHeight);
+		this.width = Anim.clamp(storedWidth, MIN_WIDTH, maxWidth);
+		this.height = Anim.clamp(storedHeight, MIN_HEIGHT, maxHeight);
+		float storedX = ChaosConfig.uiFloat(stateKey + ".x", Float.NaN);
+		float storedY = ChaosConfig.uiFloat(stateKey + ".y", Float.NaN);
+		this.x = Float.isNaN(storedX) ? Math.round((screenWidth - width) * 0.5F) : storedX;
+		this.y = Float.isNaN(storedY) ? Math.round((screenHeight - height) * 0.5F) : storedY;
+		clampToScreen();
+		appear.snap(0.0F);
+		closeAnim.snap(0.0F);
+		fadingOut = false;
+	}
+
+	public void beginClose() {
+		if (!fadingOut) {
+			fadingOut = true;
+			closeAnim.snap(0.0F);
+			closeAnim.set(1.0F);
 		}
 	}
 
-	/** Compact HSV + alpha picker used for every colour setting. */
-	public static final class ColorPicker extends UiComponent {
-		private final ChaosScreen screen;
-		private final Setting.Color setting;
-		private float hue;
-		private float saturation;
-		private float brightness;
-		private float alpha;
-		private int draggingRow = -1;
-		private float rowX;
-		private float rowWidth;
-		private float firstRowY;
-		private float rowHeight;
-		private float rowGap;
+	/** @return true once the closing animation has finished. */
+	public boolean isGone() {
+		return fadingOut && closeAnim.get() > 0.985F;
+	}
 
-		public ColorPicker(ChaosScreen screen, Setting.Color setting) {
-			this.screen = screen;
-			this.setting = setting;
-			int color = setting.get();
-			float[] hsv = Render.toHsv(color);
-			this.hue = hsv[0];
-			this.saturation = hsv[1];
-			this.brightness = hsv[2];
-			this.alpha = Render.alphaOf(color) / 255.0F;
+	public void update(float deltaSeconds, float mouseX, float mouseY) {
+		appear.set(1.0F);
+		appear.update(UiTheme.get().speed(9.0F));
+		gripHover.set(isOverResizeGrip(mouseX, mouseY) ? 1.0F : 0.0F);
+		gripHover.update(UiTheme.get().speed(14.0F));
+		if (fadingOut) {
+			closeAnim.update(UiTheme.get().speed(13.0F));
 		}
+	}
 
-		public void layout(float px, float py, float width, float height) {
-			setBounds(px, py, width, height);
-			this.rowX = px + 14.0F;
-			this.rowWidth = width - 28.0F;
-			this.firstRowY = py + 34.0F;
-			this.rowHeight = 12.0F;
-			this.rowGap = 8.0F;
+	public void snapOpen() {
+		appear.snap(1.0F);
+	}
+
+	/** Combined fade (opening and closing) used for every colour the window draws. */
+	public float alpha() {
+		return Anim.clamp01(appear.get()) * (1.0F - Anim.easeOutQuint(closeAnim.get()));
+	}
+
+	public float slide() {
+		float opening = (1.0F - Anim.easeOutQuint(Anim.clamp01(appear.get()))) * 10.0F;
+		float closing = Anim.easeOutQuint(closeAnim.get()) * 14.0F;
+		return opening + closing;
+	}
+
+	// --------------------------------------------------------------- geometry
+
+	public float x() {
+		return x;
+	}
+
+	public float y() {
+		return y;
+	}
+
+	public float width() {
+		return width;
+	}
+
+	public float height() {
+		return height;
+	}
+
+	public float right() {
+		return x + width;
+	}
+
+	public float bottom() {
+		return y + height;
+	}
+
+	/** Body starts below the title bar. */
+	public float bodyX() {
+		return x;
+	}
+
+	public float bodyY() {
+		return y + titleHeight();
+	}
+
+	public float bodyWidth() {
+		return width;
+	}
+
+	public float bodyHeight() {
+		return Math.max(0.0F, height - titleHeight());
+	}
+
+	public float titleHeight() {
+		return TITLE_HEIGHT;
+	}
+
+	public void setResizable(boolean resizable) {
+		this.resizable = resizable;
+	}
+
+	public void setSize(float width, float height) {
+		this.width = width;
+		this.height = height;
+		clampToScreen();
+	}
+
+	public void setPosition(float x, float y) {
+		this.x = x;
+		this.y = y;
+		clampToScreen();
+	}
+
+	public void center() {
+		this.width = Math.min(defaultWidth, screenWidth - 24.0F);
+		this.height = Math.min(defaultHeight, screenHeight - 24.0F);
+		this.x = Math.round((screenWidth - width) * 0.5F);
+		this.y = Math.round((screenHeight - height) * 0.5F);
+		save();
+	}
+
+	public boolean contains(float mouseX, float mouseY) {
+		return mouseX >= x && mouseX <= right() && mouseY >= y && mouseY <= bottom();
+	}
+
+	public boolean isOverTitleBar(float mouseX, float mouseY) {
+		return mouseX >= x && mouseX <= right() && mouseY >= y && mouseY <= y + titleHeight();
+	}
+
+	private boolean isOverResizeGrip(float mouseX, float mouseY) {
+		if (!resizable) {
+			return false;
 		}
+		boolean corner = mouseX >= right() - CORNER && mouseX <= right() + 1.0F
+				&& mouseY >= bottom() - CORNER && mouseY <= bottom() + 1.0F;
+		return corner;
+	}
 
-		private int argb() {
-			return Render.fromHsv(hue, saturation, brightness) & 0xFFFFFF | (Math.round(alpha * 255.0F) << 24);
+	// ---------------------------------------------------------------- drawing
+
+	public void renderShell(GuiGraphics graphics, UiTheme theme) {
+		float alpha = alpha();
+		if (alpha <= 0.01F) {
+			return;
 		}
+		float slide = slide();
+		Ui.window(graphics, x, y + slide, width, height, theme.radius, theme, alpha);
+		// Title bar: subtle separation from the body plus a hairline.
+		Render.scissor(graphics, x, y + slide, width, titleHeight());
+		Render.roundedRectGradient(graphics, x, y + slide, width, titleHeight() + theme.radius, theme.radius,
+				Render.alpha(0xFFFFFFFF, 0.045F * alpha), Render.alpha(0xFFFFFFFF, 0.0F));
+		Render.unscissor(graphics);
+		Render.rect(graphics, x + theme.radius, y + slide + titleHeight() - 1.0F, width - theme.radius * 2.0F, 1.0F,
+				Render.alpha(theme.outlineSoft, alpha));
+		renderResizeGrip(graphics, theme, alpha);
+	}
 
-		@Override
-		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			Render.shadowedPanel(graphics, x, y, width, height, theme.radius, theme.panel, theme.accent);
-			renderRow(graphics, 0, "Hue", hue, 0.0F, 1.0F);
-			renderRow(graphics, 1, "Saturation", saturation, 0.0F, 1.0F);
-			renderRow(graphics, 2, "Brightness", brightness, 0.0F, 1.0F);
-			if (setting.alphaAllowed()) {
-				renderRow(graphics, 3, "Opacity", alpha, 0.0F, 1.0F);
-			}
-			float previewY = y + height - 34.0F;
-			Render.roundedRect(graphics, x + 14.0F, previewY, width - 100.0F, 20.0F, 5.0F, argb());
-			Render.text(graphics, screen.font(), String.format("#%08X", argb()), x + 20.0F, previewY + 6.0F, 0xFFF2F2F7, true);
-			boolean hovered = mouseX >= x + width - 80.0F && mouseX <= x + width - 8.0F && mouseY >= previewY && mouseY <= previewY + 20.0F;
-			int buttonColor = Render.mix(theme.panelAlt, theme.accent, hovered ? 0.75F : 0.2F);
-			Render.roundedRect(graphics, x + width - 80.0F, previewY, 72.0F, 20.0F, 5.0F, buttonColor);
-			Render.centeredText(graphics, screen.font(), "Done", x + width - 44.0F, previewY + 6.0F, theme.text, false);
+	/** Three diagonal lines in the corner, brightening while the pointer is near. */
+	private void renderResizeGrip(GuiGraphics graphics, UiTheme theme, float alpha) {
+		if (!resizable) {
+			return;
 		}
-
-		private void renderRow(GuiGraphics graphics, int index, String label, float value, float min, float max) {
-			UiTheme theme = UiTheme.get();
-			float rowY = firstRowY + index * (rowHeight + rowGap);
-			Render.text(graphics, screen.font(), label, rowX, rowY - 1.0F, theme.textDim, false);
-			float trackX = rowX + 76.0F;
-			float trackWidth = rowWidth - 76.0F;
-			// Gradient track composed of strips - cheap and shader free.
-			int strips = 24;
-			for (int i = 0; i < strips; i++) {
-				float t = i / (float) strips;
-				int color = switch (index) {
-					case 0 -> Render.fromHsv(t, 0.9F, 1.0F);
-					case 1 -> Render.fromHsv(hue, t, brightness);
-					case 2 -> Render.fromHsv(hue, saturation, t);
-					default -> Render.fromHsv(hue, saturation, brightness) & 0xFFFFFF | (Math.round(t * 255.0F) << 24);
-				};
-				Render.rect(graphics, trackX + t * trackWidth, rowY, trackWidth / strips + 1.0F, rowHeight, color);
-			}
-			float knob = (value - min) / (max - min);
-			float knobX = trackX + knob * trackWidth;
-			Render.roundedRect(graphics, knobX - 2.0F, rowY - 2.0F, 4.0F, rowHeight + 4.0F, 2.0F, 0xFFFFFFFF);
+		float intensity = 0.18F + gripHover.get() * 0.5F;
+		int color = Render.alpha(theme.glow && gripHover.get() > 0.4F ? theme.accent : 0xFFFFFFFF, intensity * alpha);
+		for (int i = 0; i < 3; i++) {
+			float offset = 3.0F + i * 4.0F;
+			Render.line(graphics, right() - offset, bottom() - 3.0F, right() - 3.0F, bottom() - offset, 1.6F, color);
 		}
+		if (gripHover.get() > 0.05F) {
+			Render.glow(graphics, right() - 4.0F, bottom() - 4.0F, 16.0F + gripHover.get() * 10.0F, theme.accent,
+					0.28F * gripHover.get() * alpha);
+		}
+	}
 
-		@Override
-		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (!contains(mouseX, mouseY) || button != 0) {
-				return false;
-			}
-			float previewY = y + height - 34.0F;
-			if (mouseY >= previewY && mouseY <= previewY + 20.0F && mouseX >= x + width - 80.0F) {
-				screen.closePopup(true);
+	// ------------------------------------------------------------------ input
+
+	/** @return true when the click was consumed by the window chrome (drag or resize). */
+	public boolean mouseClicked(float mouseX, float mouseY, int button) {
+		if (button != 0 || !contains(mouseX, mouseY)) {
+			return false;
+		}
+		long now = System.currentTimeMillis();
+		if (isOverTitleBar(mouseX, mouseY)) {
+			boolean doubleClick = now - lastClickTime < 320L
+					&& Math.abs(mouseX - lastClickX) < 6.0F && Math.abs(mouseY - lastClickY) < 6.0F;
+			lastClickTime = now;
+			lastClickX = mouseX;
+			lastClickY = mouseY;
+			if (doubleClick) {
+				center();
 				return true;
 			}
-			for (int index = 0; index < 4; index++) {
-				float rowY = firstRowY + index * (rowHeight + rowGap);
-				if (mouseY >= rowY - 3.0F && mouseY <= rowY + rowHeight + 3.0F) {
-					draggingRow = index;
-					applyDrag(mouseX);
-					return true;
-				}
-			}
+			dragging = true;
+			dragOffsetX = mouseX - x;
+			dragOffsetY = mouseY - y;
 			return true;
 		}
+		if (isOverResizeGrip(mouseX, mouseY)) {
+			resizingWidth = true;
+			resizingHeight = true;
+			resizeStartWidth = width;
+			resizeStartHeight = height;
+			resizeStartX = mouseX;
+			resizeStartY = mouseY;
+			return true;
+		}
+		return false;
+	}
 
-		@Override
-		public boolean mouseDragged(float mouseX, float mouseY, int button, float deltaX, float deltaY) {
-			if (draggingRow >= 0) {
-				applyDrag(mouseX);
-				return true;
-			}
+	public boolean mouseDragged(float mouseX, float mouseY, int button) {
+		if (button != 0) {
 			return false;
 		}
-
-		@Override
-		public boolean mouseReleased(float mouseX, float mouseY, int button) {
-			if (draggingRow >= 0) {
-				draggingRow = -1;
-				commit();
-				return true;
+		if (dragging) {
+			x = mouseX - dragOffsetX;
+			y = mouseY - dragOffsetY;
+			clampToScreen();
+			dirty = true;
+			return true;
+		}
+		if (resizingWidth || resizingHeight) {
+			if (resizingWidth) {
+				width = Math.max(MIN_WIDTH, resizeStartWidth + (mouseX - resizeStartX));
 			}
+			if (resizingHeight) {
+				height = Math.max(MIN_HEIGHT, resizeStartHeight + (mouseY - resizeStartY));
+			}
+			clampToScreen();
+			dirty = true;
+			return true;
+		}
+		return false;
+	}
+
+	public boolean mouseReleased(int button) {
+		if (button != 0) {
 			return false;
 		}
-
-		private void applyDrag(float mouseX) {
-			float trackX = rowX + 76.0F;
-			float trackWidth = rowWidth - 76.0F;
-			float value = Anim.clamp01((mouseX - trackX) / trackWidth);
-			switch (draggingRow) {
-				case 0 -> hue = value;
-				case 1 -> saturation = value;
-				case 2 -> brightness = value;
-				case 3 -> alpha = value;
-				default -> {
-				}
-			}
-			commit();
+		boolean wasActive = dragging || resizingWidth || resizingHeight;
+		resized = resizingWidth || resizingHeight;
+		dragging = false;
+		resizingWidth = false;
+		resizingHeight = false;
+		if (wasActive && dirty) {
+			dirty = false;
+			save();
 		}
+		return wasActive;
+	}
 
-		private void commit() {
-			setting.set(argb());
-		}
+	/** True for exactly one call after a resize drag ended (used to rebuild a layout). */
+	public boolean wasResized() {
+		boolean value = resized;
+		resized = false;
+		return value;
+	}
+
+	public boolean isInteracting() {
+		return dragging || resizingWidth || resizingHeight;
+	}
+
+	private void clampToScreen() {
+		float minVisible = 70.0F;
+		width = Math.min(width, screenWidth - 8.0F);
+		height = Math.min(height, screenHeight - 8.0F);
+		x = Anim.clamp(x, minVisible - width, screenWidth - minVisible);
+		y = Anim.clamp(y, 2.0F, Math.max(2.0F, screenHeight - TITLE_HEIGHT - 4.0F));
+	}
+
+	private void save() {
+		ChaosConfig.setUi(stateKey + ".x", x);
+		ChaosConfig.setUi(stateKey + ".y", y);
+		ChaosConfig.setUi(stateKey + ".width", width);
+		ChaosConfig.setUi(stateKey + ".height", height);
 	}
 }
 ```
@@ -11957,11 +15218,19 @@ public final class ThemeModule {
 	public static Setting.Number sidebarWidth;
 	public static Setting.Toggle showKeybindHints;
 	public static Setting.Toggle compactCards;
+	public static Setting.Toggle glow;
+	public static Setting.Number shadowStrength;
+	public static Setting.Toggle windowShadow;
+	public static Setting.Toggle animations;
 
 	private ThemeModule() {
 	}
 
 	public static void register() {
+		if (MODULE != null) {
+			// Registering twice would duplicate every setting; the UI can ask for this lazily.
+			return;
+		}
 		MODULE = ModuleManager.register(new Module(ID, "Click GUI", "Appearance, animations and behaviour of the ChaosUtils interface.", Category.QOL, true));
 		accent = (Setting.Color) MODULE.add(new Setting.Color("accent", "Accent colour", "Primary highlight colour used across the UI.", 0xFF7C5CFF));
 		backgroundStyle = (Setting.Choice) MODULE.add(new Setting.Choice("background", "Backdrop", "How the GUI background is drawn.", 0, "Dark gradient", "Blur + gradient", "Flat", "Transparent"));
@@ -11975,6 +15244,15 @@ public final class ThemeModule {
 		sidebarWidth = (Setting.Number) MODULE.add(new Setting.Number("sidebar_width", "Sidebar width", "Width of the category sidebar.", 104.0, 80.0, 160.0, 1.0, "px"));
 		showKeybindHints = (Setting.Toggle) MODULE.add(new Setting.Toggle("keybind_hints", "Show keybinds", "Display the bound hotkey on module cards.", true));
 		compactCards = (Setting.Toggle) MODULE.add(new Setting.Toggle("compact", "Compact cards", "Reduce vertical padding so more settings fit on screen.", false));
+		glow = (Setting.Toggle) MODULE.add(new Setting.Toggle("glow", "Accent glow", "Soft coloured glow behind the window, active cards and sliders.", true));
+		windowShadow = (Setting.Toggle) MODULE.add(new Setting.Toggle("window_shadow", "Drop shadow", "Draw a soft shadow under floating windows so they lift off the world.", true));
+		shadowStrength = (Setting.Number) MODULE.add(new Setting.Number("shadow_strength", "Shadow strength", "Opacity of the drop shadow.", 1.0, 0.0, 2.0, 0.05, "x"));
+		animations = (Setting.Toggle) MODULE.add(new Setting.Toggle("animations", "Animations", "Smooth opening, hover, expand and scroll animations.", true));
+
+		// The theme tokens are cached for the whole frame, so every change has to invalidate them.
+		for (Setting<?> setting : MODULE.settings()) {
+			setting.onChanged(value -> dev.chaosutils.gui.UiTheme.invalidate());
+		}
 	}
 }
 ```
@@ -12492,6 +15770,35 @@ public class GuiMixin {
 			// draw the vanilla crosshair instead
 		}
 	}
+}
+```
+
+### `src/main/java/dev/chaosutils/mixin/KeyMappingAccessor.java`
+
+```java
+package dev.chaosutils.mixin;
+
+import com.mojang.blaze3d.platform.InputConstants;
+
+import net.minecraft.client.KeyMapping;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.gen.Accessor;
+
+/**
+ * Reads the physical key of a {@link KeyMapping}.
+ *
+ * <p>Needed because the game releases every key mapping when a screen opens
+ * ({@code Minecraft#setScreen} calls {@code KeyMapping.releaseAll()}), while the keyboard handler
+ * only feeds new key states to the mappings when <em>no</em> screen is open. Inside a screen the
+ * mapping state therefore says "not pressed" even while the player is still holding the key - which
+ * is exactly what a hold-to-open radial menu has to know. Polling GLFW for the mapping's key is the
+ * only reliable answer, and the key itself is {@code protected} in 1.21.11, so it is read through
+ * this accessor instead of reflection.
+ */
+@Mixin(KeyMapping.class)
+public interface KeyMappingAccessor {
+	@Accessor("key")
+	InputConstants.Key chaosutils$key();
 }
 ```
 

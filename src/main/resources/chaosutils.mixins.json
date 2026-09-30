@@ -15,6 +15,7 @@
 		"EntityMixin",
 		"GameRendererMixin",
 		"GuiMixin",
+		"KeyMappingAccessor",
 		"MouseHandlerMixin",
 		"ParticleEngineMixin",
 		"SoundEngineMixin"

@@ -1,65 +1,157 @@
 package dev.chaosutils.gui;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 import dev.chaosutils.config.Setting;
-import dev.chaosutils.core.Clipboard;
 import dev.chaosutils.util.Anim;
 import dev.chaosutils.util.InputUtil;
 import dev.chaosutils.util.Render;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
-import org.lwjgl.glfw.GLFW;
+import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.network.chat.Component;
+import net.minecraft.world.item.ItemStack;
 
-/** The ChaosUtils widget toolkit: every setting type has an animated control here. */
+/**
+ * The ChaosUtils control set.
+ *
+ * <p>Every control is drawn from the same vocabulary ({@link Ui}, {@link Render}), animates with
+ * shared timing and carries no state that survives its screen, so nothing can leak between two
+ * openings of the interface. Rows are built generically from {@link Setting} descriptions
+ * ({@link #forSetting}), which means a new feature setting can never be missing from the GUI.
+ */
 public final class UiWidgets {
 	private UiWidgets() {
 	}
 
-	private static Font fontOf(ChaosScreen screen) {
-		return screen.font();
+	public static Font font() {
+		return Minecraft.getInstance().font;
 	}
 
-	private static void label(GuiGraphics graphics, ChaosScreen screen, UiComponent component, String text, int color) {
-		Render.text(graphics, fontOf(screen), text, component.x(), component.y() + (component.height() - 8.0F) * 0.5F - 0.5F, color, false);
-	}
+	// =============================================================== primitives
 
-	private static void playClick(ChaosScreen screen, boolean on) {
-		screen.playClick(on);
-	}
-
-	// -------------------------------------------------------------------- button
-
+	/** Flat button with four visual weights and an animated hover glow. */
 	public static final class Button extends UiComponent {
-		private final ChaosScreen screen;
-		private final String label;
-		private final Runnable action;
-		private final int accent;
-		private boolean pressed;
+		public enum Variant {
+			/** Accent filled - one per screen. */
+			PRIMARY,
+			/** Transparent with a hairline, brightens on hover. */
+			GHOST,
+			/** Filled surface, the workhorse. */
+			SOFT,
+			/** Red tint for destructive actions. */
+			DANGER
+		}
 
-		public Button(ChaosScreen screen, String label, int accent, Runnable action) {
-			this.screen = screen;
+		private String label;
+		private Variant variant;
+		private Runnable action;
+		private int accent;
+		private boolean pressed;
+		private float padding = 8.0F;
+		private boolean leftAligned;
+		private ItemStack icon;
+
+		public Button(String label, Variant variant, int accent, Runnable action) {
 			this.label = label;
+			this.variant = variant;
 			this.accent = accent;
 			this.action = action;
 		}
 
+		public Button label(String value) {
+			this.label = value;
+			return this;
+		}
+
+		public void setAction(Runnable action) {
+			this.action = action;
+		}
+
+		public void setLeftAligned(boolean leftAligned) {
+			this.leftAligned = leftAligned;
+		}
+
+		public void setIcon(ItemStack icon) {
+			this.icon = icon;
+		}
+
+		public void setPadding(float padding) {
+			this.padding = padding;
+		}
+
+		@Override
+		public void update(float deltaSeconds, float mouseX, float mouseY) {
+			super.update(deltaSeconds, mouseX, mouseY);
+			if (!isHovered(mouseX, mouseY)) {
+				active.set(0.0F);
+			}
+		}
+
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			float offset = appearOffset();
+			float top = y + offset;
+			float hoverAmount = hover.get();
+			float press = active.get();
 			UiTheme theme = UiTheme.get();
-			float radius = theme.radius * 0.7F;
-			float drawY = pressed ? y + 1.0F : y;
-			int color = Render.mix(theme.panelAlt, Render.brighten(accent, 0.25F), hover.get() * 0.85F);
-			Render.roundedRect(graphics, x, drawY, width, height, radius, color);
-			Render.roundedBorder(graphics, x, drawY, width, height, radius, 1.0F, Render.alpha(accent, 0.45F), color);
-			int textColor = Render.mix(theme.text, 0xFFFFFFFF, hover.get());
-			Render.centeredText(graphics, fontOf(screen), label, x + width * 0.5F, drawY + (height - 8.0F) * 0.5F, textColor, false);
+			float radius = Math.min(theme.radiusControl, height * 0.5F);
+
+			int background;
+			int textColor;
+			switch (variant) {
+				case PRIMARY -> {
+					background = Render.mix(Render.scaleAlpha(accent, 0.92F), 0xFFFFFFFF, hoverAmount * 0.18F);
+					textColor = theme.onAccent;
+				}
+				case DANGER -> {
+					background = Render.mix(Render.alpha(theme.negative, 0.16F), Render.alpha(theme.negative, 0.30F), hoverAmount);
+					textColor = theme.negative;
+				}
+				case GHOST -> {
+					background = Render.mix(0x00000000, Render.alpha(0xFFFFFFFF, 0.09F), hoverAmount);
+					textColor = Render.mix(theme.textDim, theme.text, hoverAmount);
+				}
+				default -> {
+					background = Render.mix(Render.alpha(0xFFFFFFFF, 0.055F), Render.alpha(0xFFFFFFFF, 0.115F), hoverAmount);
+					textColor = Render.mix(theme.textDim, theme.text, hoverAmount);
+				}
+			}
+			if (theme.glow && variant == Variant.PRIMARY) {
+				Render.glow(graphics, centerX(), top + height * 0.5F, width * 0.75F, accent, 0.20F * hoverAmount * alpha);
+			}
+			Render.roundedRect(graphics, x, top, width, height, radius, Render.mix(0x00000000, background, alpha));
+			if (variant != Variant.PRIMARY) {
+				Render.ring(graphics, x, top, width, height, radius, 1.0F,
+						Render.mix(Render.alpha(theme.outlineSoft, alpha),
+								Render.alpha(variant == Variant.DANGER ? theme.negative : accent, alpha * 0.5F), hoverAmount));
+			}
+			float textY = top + (height - 8.0F) * 0.5F - press * 0.5F;
+			String shown = Render.ellipsize(font(), label == null ? "" : label, width - padding * 2.0F);
+			if (icon != null && !icon.isEmpty()) {
+				Ui.itemIcon(graphics, icon, x + padding + 6.0F, top + height * 0.5F, 0.7F, alpha);
+			}
+			if (leftAligned) {
+				Render.text(graphics, font(), shown, x + padding + (icon != null ? 16.0F : 0.0F), textY,
+						Render.alpha(textColor, alpha), false);
+			} else {
+				Render.centeredText(graphics, font(), shown, centerX(), textY, Render.alpha(textColor, alpha), false);
+			}
 		}
 
 		@Override
 		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (button == 0 && isHovered(mouseX, mouseY)) {
+			if (isHovered(mouseX, mouseY) && button == 0) {
 				pressed = true;
+				active.set(1.0F);
 				return true;
 			}
 			return false;
@@ -67,10 +159,10 @@ public final class UiWidgets {
 
 		@Override
 		public boolean mouseReleased(float mouseX, float mouseY, int button) {
-			if (pressed) {
+			if (button == 0 && pressed) {
 				pressed = false;
-				if (isHovered(mouseX, mouseY)) {
-					playClick(screen, true);
+				active.set(0.0F);
+				if (isHovered(mouseX, mouseY) && action != null) {
 					action.run();
 				}
 				return true;
@@ -79,88 +171,205 @@ public final class UiWidgets {
 		}
 	}
 
-	// -------------------------------------------------------------------- toggle
-
-	public static final class Toggle extends UiComponent {
-		private final ChaosScreen screen;
-		private final Setting.Toggle setting;
-
-		public Toggle(ChaosScreen screen, Setting.Toggle setting) {
-			this.screen = screen;
-			this.setting = setting;
-			this.active.snap(setting.get() ? 1.0F : 0.0F);
+	/** Square button that paints a custom glyph. */
+	public static final class IconButton extends UiComponent {
+		public interface Glyph {
+			void paint(GuiGraphics graphics, float centerX, float centerY, float alpha);
 		}
 
-		@Override
-		public void update(float deltaSeconds, float mouseX, float mouseY) {
-			super.update(deltaSeconds, mouseX, mouseY);
-			active.set(setting.get() ? 1.0F : 0.0F);
+		private final Glyph glyph;
+		private final Runnable action;
+		private int color;
+		private boolean round;
+
+		public IconButton(Glyph glyph, int color, Runnable action) {
+			this.glyph = glyph;
+			this.color = color;
+			this.action = action;
+		}
+
+		public IconButton round() {
+			this.round = true;
+			return this;
 		}
 
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
 			UiTheme theme = UiTheme.get();
-			label(graphics, screen, this, setting.label, Render.mix(theme.textDim, theme.text, hover.get()));
-			float switchWidth = 28.0F;
-			float switchHeight = 14.0F;
-			float sx = x + width - switchWidth;
-			float sy = y + (height - switchHeight) * 0.5F;
-			float on = active.get();
-			int track = Render.mix(0xFF3A3A48, theme.accent, on);
-			Render.roundedRect(graphics, sx, sy, switchWidth, switchHeight, switchHeight * 0.5F, track);
-			Render.roundedBorder(graphics, sx, sy, switchWidth, switchHeight, switchHeight * 0.5F, 1.0F,
-					Render.alpha(0xFFFFFFFF, 0.10F + hover.get() * 0.15F), track);
-			float knobSize = switchHeight - 4.0F;
-			float knobX = sx + 2.0F + on * (switchWidth - knobSize - 4.0F);
-			Render.roundedRect(graphics, knobX, sy + 2.0F, knobSize, knobSize, knobSize * 0.5F,
-					Render.mix(0xFFBFC2CF, 0xFFFFFFFF, on));
+			float hoverAmount = hover.get();
+			float radius = round ? height * 0.5F : Math.min(theme.radiusControl, height * 0.4F);
+			int background = Render.mix(Render.alpha(0xFFFFFFFF, 0.05F), Render.alpha(0xFFFFFFFF, 0.13F), hoverAmount);
+			if (hoverAmount > 0.02F && theme.glow) {
+				Render.glow(graphics, centerX(), centerY(), width * 0.9F, color, 0.22F * hoverAmount * alpha);
+			}
+			Render.roundedRect(graphics, x, y, width, height, radius, Render.mix(0x00000000, background, alpha));
+			if (glyph != null) {
+				glyph.paint(graphics, centerX(), centerY(), alpha * Math.max(0.55F, hoverAmount));
+			}
 		}
 
 		@Override
 		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (button == 0 && isHovered(mouseX, mouseY)) {
-				setting.toggle();
-				playClick(screen, setting.get());
+			if (isHovered(mouseX, mouseY) && button == 0) {
+				active.set(1.0F);
+				if (action != null) {
+					action.run();
+				}
 				return true;
 			}
 			return false;
 		}
 	}
 
-	// -------------------------------------------------------------------- slider
+	/** Animated on/off switch. */
+	public static final class Toggle extends UiComponent {
+		private final BooleanSupplier getter;
+		private final Consumer<Boolean> setter;
+		private final Anim.Value on = new Anim.Value(0.0F, 16.0F);
+		private int accent;
+		private float switchWidth = 26.0F;
+		private float switchHeight = 14.0F;
+		private boolean snapped;
 
-	public static final class Slider extends UiComponent {
-		private final ChaosScreen screen;
-		private final Setting.Number setting;
-		private boolean dragging;
-
-		public Slider(ChaosScreen screen, Setting.Number setting) {
-			this.screen = screen;
-			this.setting = setting;
+		public Toggle(BooleanSupplier getter, Consumer<Boolean> setter, int accent) {
+			this.getter = getter;
+			this.setter = setter;
+			this.accent = accent;
 		}
 
-		private float trackWidth() {
-			return width - 84.0F;
+		public Toggle size(float width, float height) {
+			this.switchWidth = width;
+			this.switchHeight = height;
+			return this;
+		}
+
+		@Override
+		public void update(float deltaSeconds, float mouseX, float mouseY) {
+			super.update(deltaSeconds, mouseX, mouseY);
+			boolean value = getter != null && getter.getAsBoolean();
+			on.set(value ? 1.0F : 0.0F);
+			if (!snapped) {
+				on.snap(value ? 1.0F : 0.0F);
+				snapped = true;
+			}
+			on.update(UiTheme.get().speed(16.0F));
+		}
+
+		private float switchX() {
+			return x + width - switchWidth;
+		}
+
+		private float switchY() {
+			return y + (height - switchHeight) * 0.5F;
 		}
 
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
 			UiTheme theme = UiTheme.get();
-			label(graphics, screen, this, setting.label, Render.mix(theme.textDim, theme.text, hover.get()));
-			float tw = Math.max(20.0F, trackWidth());
-			float tx = x + width - tw;
-			float fraction = (float) setting.fraction();
+			float amount = on.get();
+			float sx = switchX();
+			float sy = switchY() + appearOffset();
+			float hoverAmount = hover.get();
+			int track = Render.mix(Render.alpha(theme.track, alpha),
+					Render.alpha(Render.mix(accent, 0xFFFFFFFF, hoverAmount * 0.12F), alpha), amount);
+			if (amount > 0.05F && theme.glow) {
+				Render.glow(graphics, sx + switchWidth * 0.5F, sy + switchHeight * 0.5F, switchWidth * 1.1F, accent,
+						0.30F * amount * alpha);
+			}
+			Render.roundedRect(graphics, sx, sy, switchWidth, switchHeight, switchHeight * 0.5F, track);
+			Render.ring(graphics, sx, sy, switchWidth, switchHeight, switchHeight * 0.5F, 1.0F,
+					Render.alpha(theme.outline, alpha));
+			float knobRadius = switchHeight * 0.5F - 1.6F;
+			float travel = switchWidth - switchHeight;
+			float knobX = sx + switchHeight * 0.5F + travel * Anim.easeOutQuint(amount);
+			Ui.knob(graphics, knobX, sy + switchHeight * 0.5F, knobRadius,
+					Render.mix(0xFFD7D8E4, 0xFFFFFFFF, amount), alpha);
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (isHovered(mouseX, mouseY) && button == 0) {
+				flip();
+				return true;
+			}
+			if (isHovered(mouseX, mouseY) && button == 1) {
+				// Right click resets the bound setting through the row below (handled there).
+				return false;
+			}
+			return false;
+		}
+
+		/** Flips the bound value; also used by the surrounding row. */
+		public void flip() {
+			if (setter != null && getter != null) {
+				setter.accept(!getter.getAsBoolean());
+			}
+		}
+	}
+
+	/** Row with a label, a value and a draggable track - used for every numeric setting. */
+	public static final class Slider extends UiComponent {
+		private final Setting.Number setting;
+		private boolean dragging;
+		private float trackHeight = 4.0F;
+
+		public Slider(Setting.Number setting) {
+			this.setting = setting;
+		}
+
+		private float trackX() {
+			return x + 2.0F;
+		}
+
+		private float trackWidth() {
+			return width - 4.0F;
+		}
+
+		private float trackY() {
+			return y + height - 9.0F;
+		}
+
+		private float fraction() {
+			return (float) Anim.clamp01((float) setting.fraction());
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			float offset = appearOffset();
+			float valueAmount = fraction();
+			float hoverAmount = Math.max(hover.get(), dragging ? 1.0F : 0.0F);
+			int labelColor = Render.mix(theme.textDim, theme.text, hoverAmount * 0.8F);
+			Render.text(graphics, font(), setting.label, x, y + offset, Render.alpha(labelColor, alpha), false);
 			String value = setting.display();
-			int valueWidth = fontOf(screen).width(value);
-			Render.text(graphics, fontOf(screen), value, x + width - tw - valueWidth - 8.0F,
-					y + (height - 8.0F) * 0.5F - 0.5F, Render.mix(theme.textFaint, theme.text, hover.get()), false);
-			float ty = y + height * 0.5F - 2.0F;
-			Render.roundedRect(graphics, tx, ty, tw, 4.0F, 2.0F, 0xFF3A3A48);
-			Render.roundedRect(graphics, tx, ty, tw * fraction, 4.0F, 2.0F, theme.accent);
-			float knobSize = dragging || hover.get() > 0.4F ? 11.0F : 9.0F;
-			float knobX = tx + tw * fraction;
-			Render.roundedRect(graphics, knobX - knobSize * 0.5F, y + height * 0.5F - knobSize * 0.5F, knobSize, knobSize,
-					knobSize * 0.5F, Render.brighten(theme.accent, 0.35F));
+			Render.text(graphics, font(), value, right() - font().width(value), y + offset,
+					Render.alpha(Render.mix(theme.textFaint, theme.accent, hoverAmount), alpha), false);
+
+			float ty = trackY() + offset;
+			Render.roundedRect(graphics, trackX(), ty, trackWidth(), trackHeight, trackHeight * 0.5F,
+					Render.mix(0x00000000, Render.alpha(theme.trackHover, alpha), 1.0F));
+			float filled = Math.max(trackHeight, trackWidth() * valueAmount);
+			int fill = Render.mix(theme.accent, theme.accentBright, hoverAmount);
+			if (theme.glow && hoverAmount > 0.05F) {
+				Render.glow(graphics, trackX() + filled, ty + trackHeight * 0.5F, 16.0F + hoverAmount * 6.0F, theme.accent,
+						0.35F * hoverAmount * alpha);
+			}
+			Render.roundedRect(graphics, trackX(), ty, filled, trackHeight, trackHeight * 0.5F, Render.alpha(fill, alpha));
+			// Knob grows slightly while dragging, which is the whole trick to make sliders feel alive.
+			float knobRadius = 3.4F + hoverAmount * 1.4F + (dragging ? 0.8F : 0.0F);
+			Ui.knob(graphics, trackX() + filled, ty + trackHeight * 0.5F, knobRadius, 0xFFFFFFFF, alpha);
 		}
 
 		@Override
@@ -170,12 +379,11 @@ public final class UiWidgets {
 			}
 			if (button == 1) {
 				setting.reset();
-				playClick(screen, false);
 				return true;
 			}
 			if (button == 0) {
-				apply(mouseX);
 				dragging = true;
+				applyFromMouse(mouseX);
 				return true;
 			}
 			return false;
@@ -183,8 +391,8 @@ public final class UiWidgets {
 
 		@Override
 		public boolean mouseDragged(float mouseX, float mouseY, int button, float deltaX, float deltaY) {
-			if (dragging) {
-				apply(mouseX);
+			if (dragging && button == 0) {
+				applyFromMouse(mouseX);
 				return true;
 			}
 			return false;
@@ -192,7 +400,7 @@ public final class UiWidgets {
 
 		@Override
 		public boolean mouseReleased(float mouseX, float mouseY, int button) {
-			if (dragging) {
+			if (dragging && button == 0) {
 				dragging = false;
 				return true;
 			}
@@ -201,55 +409,626 @@ public final class UiWidgets {
 
 		@Override
 		public boolean mouseScrolled(float mouseX, float mouseY, double amount) {
-			if (isHovered(mouseX, mouseY)) {
-				setting.nudge(amount > 0 ? 1 : -1);
+			if (!isHovered(mouseX, mouseY)) {
+				return false;
+			}
+			setting.nudge(amount > 0 ? 1 : -1);
+			return true;
+		}
+
+		private void applyFromMouse(float mouseX) {
+			float fraction = (mouseX - trackX()) / Math.max(1.0F, trackWidth());
+			setting.setFraction(Anim.clamp01(fraction));
+		}
+	}
+
+	/** Segmented control for option settings; falls back to a cycler when there are many options. */
+	public static final class Choice extends UiComponent {
+		private final Setting.Choice setting;
+		private final Anim.Value indicatorX = new Anim.Value(0.0F, 18.0F);
+		private final Anim.Value indicatorWidth = new Anim.Value(0.0F, 18.0F);
+		private boolean snapped;
+
+		public Choice(Setting.Choice setting) {
+			this.setting = setting;
+		}
+
+		private boolean segmented() {
+			String[] options = setting.options();
+			if (options.length == 0 || options.length > 4) {
+				return false;
+			}
+			int total = 0;
+			for (String option : options) {
+				total += font().width(option) + 14;
+			}
+			return total <= width * 0.62F;
+		}
+
+		@Override
+		public void update(float deltaSeconds, float mouseX, float mouseY) {
+			super.update(deltaSeconds, mouseX, mouseY);
+			if (segmented()) {
+				float[] bounds = segmentBounds();
+				indicatorX.set(bounds[0]);
+				indicatorWidth.set(bounds[1]);
+				if (!snapped) {
+					indicatorX.snap(bounds[0]);
+					indicatorWidth.snap(bounds[1]);
+					snapped = true;
+				}
+				indicatorX.update(UiTheme.get().speed(18.0F));
+				indicatorWidth.update(UiTheme.get().speed(18.0F));
+			}
+		}
+
+		/** @return {x, width} of the selected segment relative to the row. */
+		private float[] segmentBounds() {
+			String[] options = setting.options();
+			int totalWidth = 0;
+			for (String option : options) {
+				totalWidth += font().width(option) + 14;
+			}
+			float startX = right() - totalWidth;
+			int selected = Anim.clamp(setting.get(), 0, Math.max(0, options.length - 1));
+			float offset = startX;
+			for (int i = 0; i < selected; i++) {
+				offset += font().width(options[i]) + 14;
+			}
+			return new float[] {offset, font().width(options[selected]) + 14.0F};
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			float offset = appearOffset();
+			Render.text(graphics, font(), setting.label, x, y + offset,
+					Render.alpha(Render.mix(theme.textDim, theme.text, hover.get() * 0.8F), alpha), false);
+			String[] options = setting.options();
+			int selected = Anim.clamp(setting.get(), 0, Math.max(0, options.length - 1));
+			if (segmented()) {
+				float totalWidth = 0;
+				for (String option : options) {
+					totalWidth += font().width(option) + 14;
+				}
+				float startX = right() - totalWidth;
+				float controlY = y + offset + (height - 18.0F) * 0.5F;
+				Render.roundedRect(graphics, startX, controlY, totalWidth, 18.0F, 9.0F,
+						Render.alpha(theme.track, alpha * 0.7F));
+				Render.roundedRect(graphics, indicatorX.get(), controlY, indicatorWidth.get(), 18.0F, 9.0F,
+						Render.alpha(Render.mix(theme.accent, theme.accentBright, hover.get() * 0.3F), alpha));
+				float cursor = startX;
+				for (int i = 0; i < options.length; i++) {
+					int textColor = i == selected ? theme.onAccent : Render.mix(theme.textDim, theme.text, hover.get() * 0.6F);
+					Render.centeredText(graphics, font(), options[i], cursor + (font().width(options[i]) + 14) * 0.5F,
+							controlY + 5.0F, Render.alpha(textColor, alpha), false);
+					cursor += font().width(options[i]) + 14;
+				}
+			} else {
+				String value = setting.display();
+				float chipWidth = Math.min(width * 0.55F, font().width(value) + 26.0F);
+				float chipX = right() - chipWidth;
+				float controlY = y + offset + (height - 17.0F) * 0.5F;
+				Render.roundedRect(graphics, chipX, controlY, chipWidth, 17.0F, 8.5F,
+						Render.mix(Render.alpha(theme.track, alpha), Render.alpha(theme.accent, alpha * 0.5F), hover.get()));
+				Render.centeredText(graphics, font(), Render.ellipsize(font(), value, chipWidth - 16.0F),
+						chipX + chipWidth * 0.5F, controlY + 4.5F,
+						Render.alpha(Render.mix(theme.text, 0xFFFFFFFF, hover.get()), alpha), false);
+				Ui.chevron(graphics, chipX + chipWidth - 8.0F, controlY + 8.5F, 5.0F, hover.get() > 0.5F ? 0.0F : -180.0F,
+						Render.alpha(theme.textFaint, alpha));
+			}
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (!isHovered(mouseX, mouseY)) {
+				return false;
+			}
+			if (button == 1) {
+				setting.reset();
+				return true;
+			}
+			if (button != 0) {
+				return false;
+			}
+			if (segmented()) {
+				String[] options = setting.options();
+				int totalWidth = 0;
+				for (String option : options) {
+					totalWidth += font().width(option) + 14;
+				}
+				float cursor = right() - totalWidth;
+				for (int i = 0; i < options.length; i++) {
+					float segmentWidth = font().width(options[i]) + 14;
+					if (mouseX >= cursor && mouseX <= cursor + segmentWidth) {
+						setting.set(i);
+						return true;
+					}
+					cursor += segmentWidth;
+				}
+			}
+			setting.cycle(1);
+			return true;
+		}
+	}
+
+	/** Colour swatch that opens the picker. */
+	public static final class ColorField extends UiComponent {
+		private final Setting.Color setting;
+		private final ChaosScreen screen;
+
+		public ColorField(Setting.Color setting, ChaosScreen screen) {
+			this.setting = setting;
+			this.screen = screen;
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			float offset = appearOffset();
+			Render.text(graphics, font(), setting.label, x, y + offset,
+					Render.alpha(Render.mix(theme.textDim, theme.text, hover.get() * 0.8F), alpha), false);
+			float swatchHeight = 15.0F;
+			float swatchWidth = 30.0F;
+			float swatchX = right() - swatchWidth;
+			float swatchY = y + offset + (height - swatchHeight) * 0.5F;
+			String hex = String.format("#%06X", setting.get() & 0xFFFFFF);
+			Render.text(graphics, font(), hex, swatchX - 6.0F - font().width(hex), y + offset + (height - 8.0F) * 0.5F,
+					Render.alpha(theme.textFaint, alpha), false);
+			Render.roundedRect(graphics, swatchX, swatchY, swatchWidth, swatchHeight, 5.0F,
+					Render.mix(0x00000000, Render.alpha(setting.get() | 0xFF000000, alpha), 1.0F));
+			Render.ring(graphics, swatchX, swatchY, swatchWidth, swatchHeight, 5.0F, 1.0F,
+					Render.mix(Render.alpha(theme.outlineSoft, alpha),
+							Render.alpha(0xFFFFFFFF, alpha * 0.55F), hover.get()));
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (!isHovered(mouseX, mouseY)) {
+				return false;
+			}
+			if (button == 1) {
+				setting.reset();
+				return true;
+			}
+			if (button == 0 && screen != null) {
+				screen.openColorModal(setting);
 				return true;
 			}
 			return false;
 		}
+	}
 
-		private void apply(float mouseX) {
-			float tw = Math.max(20.0F, trackWidth());
-			float tx = x + width - tw;
-			setting.setFraction((mouseX - tx) / tw);
+	/** Hotkey field: click, press a key, done. */
+	public static final class KeyField extends UiComponent {
+		private final Setting.Key setting;
+		private boolean listening;
+		private int heldBefore;
+
+		public KeyField(Setting.Key setting) {
+			this.setting = setting;
+		}
+
+		public boolean isListening() {
+			return listening;
+		}
+
+		public void cancelListening() {
+			listening = false;
+		}
+
+		@Override
+		public void update(float deltaSeconds, float mouseX, float mouseY) {
+			super.update(deltaSeconds, mouseX, mouseY);
+			if (listening) {
+				int pressed = InputUtil.pollNewInput(heldBefore);
+				if (pressed == InputUtil.NO_KEY) {
+					heldBefore = InputUtil.currentlyHeld();
+				} else if (pressed == 256) {
+					listening = false;
+				} else {
+					setting.set(pressed);
+					listening = false;
+				}
+			}
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			float offset = appearOffset();
+			Render.text(graphics, font(), setting.label, x, y + offset,
+					Render.alpha(Render.mix(theme.textDim, theme.text, hover.get() * 0.8F), alpha), false);
+			String value = listening ? "press a key…" : InputUtil.keyName(setting.get());
+			float chipWidth = font().width(value) + 18.0F;
+			float chipX = right() - chipWidth;
+			float chipY = y + offset + (height - 17.0F) * 0.5F;
+			boolean highlight = listening || hover.get() > 0.3F;
+			Render.roundedRect(graphics, chipX, chipY, chipWidth, 17.0F, 8.5F,
+					Render.mix(Render.alpha(theme.track, alpha),
+							Render.alpha(listening ? theme.accent : 0xFFFFFFFF, alpha * (listening ? 0.45F : 0.12F)), highlight ? 1.0F : 0.0F));
+			if (listening) {
+				Render.ring(graphics, chipX, chipY, chipWidth, 17.0F, 8.5F, 1.0F,
+						Render.alpha(theme.accent, alpha * (0.5F + 0.5F * Anim.pulse((float) (System.nanoTime() / 1.0E9), 1.4F))));
+			}
+			Render.centeredText(graphics, font(), value, chipX + chipWidth * 0.5F, chipY + 4.5F,
+					Render.alpha(listening ? theme.accent : theme.text, alpha), false);
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (!isHovered(mouseX, mouseY)) {
+				return false;
+			}
+			if (button == 1) {
+				setting.set(InputUtil.NO_KEY);
+				listening = false;
+				return true;
+			}
+			if (button == 0) {
+				listening = !listening;
+				heldBefore = InputUtil.currentlyHeld();
+				return true;
+			}
+			return false;
 		}
 	}
 
-	// -------------------------------------------------------------------- choice
-
-	public static final class Choice extends UiComponent {
+	/** Text setting: opens the shared text modal. */
+	public static final class TextField extends UiComponent {
+		private final Setting.Text setting;
 		private final ChaosScreen screen;
-		private final Setting.Choice setting;
-		private final Anim.Value flash = new Anim.Value(0.0F, 8.0F);
 
-		public Choice(ChaosScreen screen, Setting.Choice setting) {
+		public TextField(Setting.Text setting, ChaosScreen screen) {
+			this.setting = setting;
 			this.screen = screen;
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			float offset = appearOffset();
+			Render.text(graphics, font(), setting.label, x, y + offset,
+					Render.alpha(Render.mix(theme.textDim, theme.text, hover.get() * 0.8F), alpha), false);
+			float boxX = x + Math.min(width * 0.45F, font().width(setting.label) + 12.0F);
+			float boxWidth = right() - boxX;
+			float boxY = y + offset + (height - 17.0F) * 0.5F;
+			Render.roundedRect(graphics, boxX, boxY, boxWidth, 17.0F, 8.5F,
+					Render.mix(Render.alpha(theme.track, alpha), Render.alpha(0xFFFFFFFF, alpha * 0.10F), hover.get()));
+			String value = Render.ellipsize(font(), setting.get(), boxWidth - 16.0F);
+			Render.text(graphics, font(), value, boxX + 8.0F, boxY + 4.5F, Render.alpha(theme.text, alpha), false);
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (!isHovered(mouseX, mouseY) || screen == null) {
+				return false;
+			}
+			if (button == 1) {
+				setting.reset();
+				return true;
+			}
+			if (button == 0) {
+				screen.openTextModal(setting.label, setting.get(), setting.maxLength(), setting::set);
+				return true;
+			}
+			return false;
+		}
+	}
+
+	/** Position setting: the actual pinning happens in the HUD editor. */
+	public static final class PositionField extends UiComponent {
+		private final String label;
+		private final Runnable openEditor;
+
+		public PositionField(String label, Runnable openEditor) {
+			this.label = label;
+			this.openEditor = openEditor;
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			float offset = appearOffset();
+			Render.text(graphics, font(), label, x, y + offset,
+					Render.alpha(Render.mix(theme.textDim, theme.text, hover.get() * 0.8F), alpha), false);
+			String value = "open HUD editor";
+			float chipWidth = font().width(value) + 16.0F;
+			float chipX = right() - chipWidth;
+			float chipY = y + offset + (height - 16.0F) * 0.5F;
+			Render.roundedRect(graphics, chipX, chipY, chipWidth, 16.0F, 8.0F,
+					Render.mix(Render.alpha(theme.track, alpha), Render.alpha(theme.accent, alpha * 0.45F), hover.get()));
+			Render.centeredText(graphics, font(), value, chipX + chipWidth * 0.5F, chipY + 4.0F,
+					Render.alpha(Render.mix(theme.textDim, 0xFFFFFFFF, hover.get()), alpha), false);
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (isHovered(mouseX, mouseY) && button == 0 && openEditor != null) {
+				openEditor.run();
+				return true;
+			}
+			return false;
+		}
+	}
+
+	/** Action setting (a one-shot button described by the module). */
+	public static final class ActionField extends UiComponent {
+		private final Setting<?> setting;
+
+		public ActionField(Setting<?> setting) {
 			this.setting = setting;
 		}
 
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
 			UiTheme theme = UiTheme.get();
-			label(graphics, screen, this, setting.label, Render.mix(theme.textDim, theme.text, hover.get()));
-			String value = setting.display();
-			float boxWidth = Math.max(74.0F, fontOf(screen).width(value) + 24.0F);
-			float bx = x + width - boxWidth;
-			int background = Render.mix(theme.panelAlt, theme.panelHover, hover.get());
-			background = Render.mix(background, theme.accent, flash.get() * 0.35F);
-			Render.roundedRect(graphics, bx, y, boxWidth, height, theme.radius * 0.6F, background);
-			Render.centeredText(graphics, fontOf(screen), value, bx + boxWidth * 0.5F, y + (height - 8.0F) * 0.5F - 0.5F, theme.text, false);
-			Render.text(graphics, fontOf(screen), "‹", bx + 6.0F, y + (height - 8.0F) * 0.5F - 0.5F, theme.textFaint, false);
-			Render.text(graphics, fontOf(screen), "›", bx + boxWidth - 11.0F, y + (height - 8.0F) * 0.5F - 0.5F, theme.textFaint, false);
-			flash.update(deltaSeconds);
+			float offset = appearOffset();
+			boolean hovered = hover.get() > 0.05F;
+			Render.text(graphics, font(), setting.label, x, y + offset,
+					Render.alpha(Render.mix(theme.textDim, theme.text, hover.get() * 0.8F), alpha), false);
+			String hint = "run";
+			float chipWidth = font().width(hint) + 16.0F;
+			float chipX = right() - chipWidth;
+			float chipY = y + offset + (height - 16.0F) * 0.5F;
+			Render.roundedRect(graphics, chipX, chipY, chipWidth, 16.0F, 8.0F,
+					Render.mix(Render.alpha(theme.track, alpha), Render.alpha(theme.accent, alpha * 0.5F), hover.get()));
+			Render.centeredText(graphics, font(), hint, chipX + chipWidth * 0.5F, chipY + 4.0F,
+					Render.alpha(hovered ? 0xFFFFFFFF : theme.textDim, alpha), false);
 		}
 
 		@Override
 		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (isHovered(mouseX, mouseY) && (button == 0 || button == 1)) {
-				setting.cycle(button == 0 ? 1 : -1);
-				flash.snap(1.0F);
-				flash.set(0.0F);
-				playClick(screen, true);
+			if (isHovered(mouseX, mouseY) && button == 0) {
+				if (setting instanceof Setting.Action action) {
+					action.run();
+				}
+				return true;
+			}
+			return false;
+		}
+	}
+
+	// ============================================================ row assembly
+
+	/**
+	 * Builds the control row for a setting, or {@code null} for settings that are shown as part of
+	 * another control (the module toggle lives in the card header).
+	 */
+	public static UiComponent forSetting(Setting<?> setting, ChaosScreen screen) {
+		return switch (setting.kind()) {
+			case TOGGLE -> {
+				Setting.Toggle toggle = (Setting.Toggle) setting;
+				Toggle widget = new Toggle(toggle::get, toggle::set, UiTheme.get().accent);
+				widget.setTooltip(setting.description);
+				yield new LabeledSwitch(setting.label, widget);
+			}
+			case NUMBER -> new Slider((Setting.Number) setting);
+			case CHOICE -> new Choice((Setting.Choice) setting);
+			case COLOR -> new ColorField((Setting.Color) setting, screen);
+			case KEY -> new KeyField((Setting.Key) setting);
+			case TEXT -> new TextField((Setting.Text) setting, screen);
+			case POSITION -> new PositionField(setting.label,
+					screen == null ? null : screen::openHudEditor);
+			case ACTION -> new ActionField(setting);
+		};
+	}
+
+	/** Label on the left, switch on the right - the row shape used for every boolean setting. */
+	public static final class LabeledSwitch extends UiComponent {
+		private final String label;
+		private final Toggle toggle;
+
+		public LabeledSwitch(String label, Toggle toggle) {
+			this.label = label;
+			this.toggle = toggle;
+		}
+
+		@Override
+		public void update(float deltaSeconds, float mouseX, float mouseY) {
+			super.update(deltaSeconds, mouseX, mouseY);
+			toggle.setBounds(x + width - toggle.width(), y, toggle.width(), height);
+			toggle.setLayerAlpha(layerAlpha);
+			toggle.update(deltaSeconds, mouseX, mouseY);
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
+			}
+			UiTheme theme = UiTheme.get();
+			Render.text(graphics, font(), Render.ellipsize(font(), label, width - toggle.width() - 12.0F),
+					x, y + appearOffset() + (height - 8.0F) * 0.5F,
+					Render.alpha(Render.mix(theme.textDim, theme.text, hover.get() * 0.8F), alpha), false);
+			toggle.render(graphics, mouseX, mouseY, deltaSeconds);
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (button == 1 && isHovered(mouseX, mouseY)) {
+				toggle.flip();
+				return true;
+			}
+			return toggle.mouseClicked(mouseX, mouseY, button) || super.mouseClicked(mouseX, mouseY, button);
+		}
+
+		@Override
+		public boolean mouseReleased(float mouseX, float mouseY, int button) {
+			return toggle.mouseReleased(mouseX, mouseY, button);
+		}
+	}
+
+	// ================================================================ container
+
+	/** Smoothly scrolling list with a fading scrollbar and clipped content. */
+	public static final class ScrollList extends UiComponent {
+		private final List<Float> baseY = new ArrayList<>();
+		private float scroll;
+		private float targetScroll;
+		private float contentHeight;
+		private float spacing = 6.0F;
+		private final Anim.Value barOpacity = new Anim.Value(0.0F, 6.0F);
+
+		public void setSpacing(float spacing) {
+			this.spacing = spacing;
+		}
+
+		public void clearItems() {
+			clearChildren();
+			baseY.clear();
+			targetScroll = 0.0F;
+			contentHeight = 0.0F;
+		}
+
+		public void addItem(UiComponent component) {
+			addChild(component);
+			baseY.add(0.0F);
+		}
+
+		/** Lays items out vertically; called after every rebuild. */
+		public void layout() {
+			List<UiComponent> items = children();
+			float cursor = 0.0F;
+			for (int i = 0; i < items.size(); i++) {
+				if (i < baseY.size()) {
+					baseY.set(i, cursor);
+				} else {
+					baseY.add(cursor);
+				}
+				cursor += items.get(i).height() + spacing;
+			}
+			contentHeight = items.isEmpty() ? 0.0F : Math.max(0.0F, cursor - spacing);
+			targetScroll = Anim.clamp(targetScroll, 0.0F, maxScroll());
+			scroll = Anim.clamp(scroll, 0.0F, maxScroll());
+		}
+
+		public float contentHeight() {
+			return contentHeight;
+		}
+
+		private float maxScroll() {
+			return Math.max(0.0F, contentHeight - height);
+		}
+
+		public void scrollTo(float value) {
+			targetScroll = Anim.clamp(value, 0.0F, maxScroll());
+		}
+
+		public float scroll() {
+			return scroll;
+		}
+
+		@Override
+		public void update(float deltaSeconds, float mouseX, float mouseY) {
+			appear.snap(1.0F);
+			List<UiComponent> items = children();
+			float before = scroll;
+			scroll = Anim.approach(scroll, targetScroll, UiTheme.get().speed(13.0F), deltaSeconds);
+			barOpacity.set(Math.abs(scroll - before) > 0.4F || isHovered(mouseX, mouseY) ? 1.0F : 0.0F);
+			barOpacity.update(UiTheme.get().speed(4.0F));
+			for (int i = 0; i < items.size(); i++) {
+				UiComponent item = items.get(i);
+				float base = i < baseY.size() ? baseY.get(i) : 0.0F;
+				item.setBounds(x, y + base - scroll, width, item.height());
+				item.setLayerAlpha(layerAlpha);
+				if (item.bottom() > y - 6.0F && item.y() < bottom() + 6.0F) {
+					item.update(deltaSeconds, mouseX, mouseY);
+				}
+			}
+			// Items may have changed height while animating (expanding cards), so the offsets are
+			// recomputed right away instead of one frame later.
+			layout();
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F || height <= 0.0F || width <= 0.0F) {
+				return;
+			}
+			Render.scissor(graphics, x, y, width, height);
+			for (UiComponent item : children()) {
+				if (item.isVisible() && item.bottom() > y - 6.0F && item.y() < bottom() + 6.0F) {
+					item.render(graphics, mouseX, mouseY, deltaSeconds);
+				}
+			}
+			Render.unscissor(graphics);
+			float max = maxScroll();
+			if (max > 1.0F && barOpacity.get() > 0.02F) {
+				float trackHeight = height - 4.0F;
+				float barHeight = Math.max(24.0F, trackHeight * (height / Math.max(height, contentHeight)));
+				float barY = y + 2.0F + (trackHeight - barHeight) * (scroll / max);
+				Render.roundedRect(graphics, right() - 3.0F, barY, 3.0F, barHeight, 1.5F,
+						Render.alpha(UiTheme.get().accent, 0.55F * barOpacity.get() * alpha));
+			}
+		}
+
+		/** Only items that are actually inside the viewport receive input. */
+		private boolean itemHandles(UiComponent item) {
+			return item.isVisible() && item.bottom() > y && item.y() < bottom();
+		}
+
+		@Override
+		public boolean mouseClicked(float mouseX, float mouseY, int button) {
+			if (!isHovered(mouseX, mouseY)) {
+				return false;
+			}
+			List<UiComponent> items = children();
+			for (int i = items.size() - 1; i >= 0; i--) {
+				UiComponent item = items.get(i);
+				if (itemHandles(item) && item.mouseClicked(mouseX, mouseY, button)) {
+					return true;
+				}
+			}
+			return false;
+		}
+
+		@Override
+		public boolean mouseReleased(float mouseX, float mouseY, int button) {
+			boolean handled = false;
+			for (UiComponent item : children()) {
+				if (itemHandles(item) && item.mouseReleased(mouseX, mouseY, button)) {
+					handled = true;
+				}
+			}
+			return handled;
+		}
+
+		@Override
+		public boolean mouseDragged(float mouseX, float mouseY, int button, float deltaX, float deltaY) {
+			for (UiComponent item : children()) {
+				if (itemHandles(item) && item.mouseDragged(mouseX, mouseY, button, deltaX, deltaY)) {
+					return true;
+				}
+			}
+			if (button == 0 && isHovered(mouseX, mouseY) && deltaY != 0.0F) {
+				targetScroll = Anim.clamp(targetScroll - (float) deltaY, 0.0F, maxScroll());
 				return true;
 			}
 			return false;
@@ -257,460 +1036,243 @@ public final class UiWidgets {
 
 		@Override
 		public boolean mouseScrolled(float mouseX, float mouseY, double amount) {
-			if (isHovered(mouseX, mouseY)) {
-				setting.cycle(amount > 0 ? 1 : -1);
-				return true;
+			if (!isHovered(mouseX, mouseY)) {
+				return false;
 			}
-			return false;
-		}
-	}
-
-	// --------------------------------------------------------------------- color
-
-	public static final class ColorField extends UiComponent {
-		private final ChaosScreen screen;
-		private final Setting.Color setting;
-
-		public ColorField(ChaosScreen screen, Setting.Color setting) {
-			this.screen = screen;
-			this.setting = setting;
-		}
-
-		@Override
-		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			label(graphics, screen, this, setting.label, Render.mix(theme.textDim, theme.text, hover.get()));
-			float boxWidth = 78.0F;
-			float bx = x + width - boxWidth;
-			int background = Render.mix(theme.panelAlt, theme.panelHover, hover.get());
-			Render.roundedRect(graphics, bx, y, boxWidth, height, theme.radius * 0.6F, background);
-			int color = setting.get();
-			Render.roundedRect(graphics, bx + 4.0F, y + 3.0F, height - 6.0F, height - 6.0F, (height - 6.0F) * 0.3F, color | 0xFF000000);
-			Render.text(graphics, fontOf(screen), String.format("#%06X", color & 0xFFFFFF), bx + height + 1.0F,
-					y + (height - 8.0F) * 0.5F - 0.5F, theme.textDim, false);
-		}
-
-		@Override
-		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (isHovered(mouseX, mouseY)) {
-				if (button == 1) {
-					setting.reset();
-				} else {
-					screen.openColorPicker(setting);
-					playClick(screen, true);
+			for (UiComponent item : children()) {
+				if (itemHandles(item) && item.mouseScrolled(mouseX, mouseY, amount)) {
+					return true;
 				}
-				return true;
 			}
-			return false;
+			targetScroll = Anim.clamp(targetScroll - (float) amount * 32.0F, 0.0F, maxScroll());
+			return true;
+		}
+
+		@Override
+		public void reset() {
+			super.reset();
+			scroll = 0.0F;
+			targetScroll = 0.0F;
 		}
 	}
 
-	// ----------------------------------------------------------------------- key
+	/** Rounded search field around a vanilla text box (so IME, clipboard and selection work). */
+	public static final class SearchField extends UiComponent {
+		private final EditBox box;
+		private Runnable onClear;
 
-	public static final class KeyField extends UiComponent {
-		private final ChaosScreen screen;
-		private final Setting.Key setting;
-		private int lastPolled = InputUtil.NO_KEY;
+		public SearchField(EditBox box) {
+			this.box = box;
+		}
 
-		public KeyField(ChaosScreen screen, Setting.Key setting) {
-			this.screen = screen;
-			this.setting = setting;
+		public EditBox box() {
+			return box;
+		}
+
+		public void setOnClear(Runnable onClear) {
+			this.onClear = onClear;
+		}
+
+		public void place(float x, float y, float width, float height) {
+			setBounds(x, y, width, height);
+			box.setX(Math.round(x + 26.0F));
+			box.setY(Math.round(y + (height - 8.0F) * 0.5F));
 		}
 
 		@Override
 		public void update(float deltaSeconds, float mouseX, float mouseY) {
 			super.update(deltaSeconds, mouseX, mouseY);
-			if (!setting.isListening()) {
-				lastPolled = InputUtil.NO_KEY;
+			// Reserve room for the magnifier and the clear button.
+			box.setWidth(Math.round(width - (box.getValue().isEmpty() ? 36.0F : 52.0F)));
+		}
+
+		@Override
+		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
 				return;
 			}
-			int pressed = InputUtil.pollNewInput(lastPolled);
-			lastPolled = InputUtil.currentlyHeld();
-			if (pressed == InputUtil.NO_KEY) {
-				return;
-			}
-			if (pressed == GLFW.GLFW_KEY_ESCAPE || pressed == GLFW.GLFW_KEY_BACKSPACE) {
-				setting.stopListening();
-			} else if (pressed == GLFW.GLFW_KEY_DELETE) {
-				setting.set(InputUtil.NO_KEY);
+			UiTheme theme = UiTheme.get();
+			float focusAmount = box.isFocused() ? 1.0F : 0.0F;
+			focus.set(focusAmount);
+			focus.update(UiTheme.get().speed(14.0F));
+			float focusValue = focus.get();
+			float radius = Math.min(theme.radiusControl + 2.0F, height * 0.5F);
+			Render.roundedRect(graphics, x, y, width, height, radius,
+					Render.mix(Render.alpha(theme.track, alpha), Render.alpha(theme.surfaceHover, alpha), hover.get() * 0.6F));
+			if (focusValue > 0.02F) {
+				Render.ring(graphics, x, y, width, height, radius, 1.0F, Render.alpha(theme.accent, alpha * 0.7F * focusValue));
+				if (theme.glow) {
+					Render.glow(graphics, centerX(), centerY(), width * 0.6F, theme.accent, 0.12F * focusValue * alpha);
+				}
 			} else {
-				setting.set(pressed);
+				Render.ring(graphics, x, y, width, height, radius, 1.0F, Render.alpha(theme.outlineSoft, alpha));
 			}
-			playClick(screen, true);
-		}
-
-		@Override
-		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			label(graphics, screen, this, setting.label, Render.mix(theme.textDim, theme.text, hover.get()));
-			String value = setting.isListening() ? "press a key…" : setting.display();
-			float boxWidth = Math.max(70.0F, fontOf(screen).width(value) + 18.0F);
-			float bx = x + width - boxWidth;
-			int accent = setting.isListening() ? theme.warning : theme.accent;
-			int background = Render.mix(theme.panelAlt, theme.panelHover, hover.get());
-			Render.roundedRect(graphics, bx, y, boxWidth, height, theme.radius * 0.6F, background);
-			Render.roundedBorder(graphics, bx, y, boxWidth, height, theme.radius * 0.6F, 1.0F, Render.alpha(accent, 0.7F), background);
-			Render.centeredText(graphics, fontOf(screen), value, bx + boxWidth * 0.5F, y + (height - 8.0F) * 0.5F - 0.5F, theme.text, false);
+			// Magnifier glyph.
+			float glyphX = x + 10.0F;
+			float glyphY = centerY();
+			int glyphColor = Render.alpha(theme.textFaint, alpha);
+			Render.ring(graphics, glyphX - 5.0F, glyphY - 6.0F, 10.0F, 10.0F, 5.0F, 1.5F, glyphColor);
+			Render.line(graphics, glyphX + 3.2F, glyphY + 2.2F, glyphX + 6.2F, glyphY + 5.2F, 1.6F, glyphColor);
+			if (!box.getValue().isEmpty() && hover.get() > 0.05F) {
+				float clearX = right() - 14.0F;
+				Render.circle(graphics, clearX, centerY(), 6.0F, Render.alpha(theme.textFaint, alpha * 0.35F * hover.get()));
+				Render.line(graphics, clearX - 2.4F, centerY() - 2.4F, clearX + 2.4F, centerY() + 2.4F, 1.4F,
+						Render.alpha(0xFFFFFFFF, alpha * 0.8F));
+				Render.line(graphics, clearX + 2.4F, centerY() - 2.4F, clearX - 2.4F, centerY() + 2.4F, 1.4F,
+						Render.alpha(0xFFFFFFFF, alpha * 0.8F));
+			}
 		}
 
 		@Override
 		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (isHovered(mouseX, mouseY)) {
-				setting.listen();
-				return true;
+			if (!isHovered(mouseX, mouseY)) {
+				return false;
 			}
-			return false;
-		}
-	}
-
-	// ------------------------------------------------------------------ position
-
-	public static final class PositionField extends UiComponent {
-		private final ChaosScreen screen;
-		private final Setting.Position setting;
-
-		public PositionField(ChaosScreen screen, Setting.Position setting) {
-			this.screen = screen;
-			this.setting = setting;
-		}
-
-		@Override
-		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			label(graphics, screen, this, setting.label, Render.mix(theme.textDim, theme.text, hover.get()));
-			float boxWidth = 78.0F;
-			float bx = x + width - boxWidth;
-			int background = Render.mix(theme.panelAlt, theme.panelHover, hover.get());
-			Render.roundedRect(graphics, bx, y, boxWidth, height, theme.radius * 0.6F, background);
-			Render.centeredText(graphics, fontOf(screen), "Adjust", bx + boxWidth * 0.5F, y + (height - 8.0F) * 0.5F - 0.5F, theme.text, false);
-			float px = bx + 6.0F + setting.get().x() * 8.0F;
-			float py = y + height - 5.0F - setting.get().y() * 4.0F;
-			Render.rect(graphics, px, py, 3.0F, 3.0F, theme.accent);
-		}
-
-		@Override
-		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (isHovered(mouseX, mouseY)) {
-				if (button == 1) {
-					setting.reset();
-				} else {
-					screen.openHudEditor();
+			if (button == 0 && !box.getValue().isEmpty() && mouseX >= right() - 22.0F) {
+				box.setValue("");
+				if (onClear != null) {
+					onClear.run();
 				}
 				return true;
 			}
-			return false;
+			return button == 0;
 		}
 	}
 
-	// --------------------------------------------------------------------- action
+	/** Small caption used between groups of settings. */
+	public static final class SectionHeader extends UiComponent {
+		private final String text;
 
-	public static final class ActionField extends UiComponent {
-		private final ChaosScreen screen;
-		private final Setting.Action setting;
-
-		public ActionField(ChaosScreen screen, Setting.Action setting) {
-			this.screen = screen;
-			this.setting = setting;
+		public SectionHeader(String text) {
+			this.text = text;
 		}
 
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			label(graphics, screen, this, setting.label, Render.mix(theme.textDim, theme.text, hover.get()));
-			float boxWidth = 78.0F;
-			float bx = x + width - boxWidth;
-			int background = Render.mix(theme.panelAlt, Render.brighten(theme.accent, 0.1F), hover.get());
-			Render.roundedRect(graphics, bx, y, boxWidth, height, theme.radius * 0.6F, background);
-			Render.centeredText(graphics, fontOf(screen), "Run", bx + boxWidth * 0.5F, y + (height - 8.0F) * 0.5F - 0.5F, theme.text, false);
-		}
-
-		@Override
-		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (isHovered(mouseX, mouseY) && button == 0) {
-				playClick(screen, true);
-				setting.run();
-				return true;
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
 			}
-			return false;
+			UiTheme theme = UiTheme.get();
+			Ui.sectionLabel(graphics, font(), text, x, y + appearOffset() + 2.0F, theme.textFaint, alpha);
+			int labelWidth = font().width(text.toUpperCase(java.util.Locale.ROOT));
+			Ui.divider(graphics, x + labelWidth + 8.0F, y + appearOffset() + 6.0F, Math.max(0.0F, width - labelWidth - 8.0F),
+					theme, alpha);
 		}
 	}
 
-	// ---------------------------------------------------------------------- text
+	/** Small static text. */
+	public static final class Label extends UiComponent {
+		private String text;
+		private int color;
+		private boolean centered;
+		private boolean bold;
 
-	public static final class TextField extends UiComponent {
-		private final ChaosScreen screen;
-		private final Setting.Text setting;
+		public Label(String text, int color) {
+			this.text = text;
+			this.color = color;
+		}
 
-		public TextField(ChaosScreen screen, Setting.Text setting) {
-			this.screen = screen;
-			this.setting = setting;
+		public Label centered() {
+			this.centered = true;
+			return this;
+		}
+
+		public Label bold() {
+			this.bold = true;
+			return this;
+		}
+
+		public void setText(String text) {
+			this.text = text;
+		}
+
+		public void setColor(int color) {
+			this.color = color;
 		}
 
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			label(graphics, screen, this, setting.label, Render.mix(theme.textDim, theme.text, hover.get()));
-			String value = setting.display();
-			float boxWidth = Math.min(width * 0.55F, 160.0F);
-			float bx = x + width - boxWidth;
-			Render.roundedRect(graphics, bx, y, boxWidth, height, theme.radius * 0.6F, Render.mix(theme.panelAlt, theme.panelHover, hover.get()));
-			float maxText = boxWidth - 10.0F;
-			while (fontOf(screen).width(value) > maxText && value.length() > 3) {
-				value = value.substring(0, value.length() - 2) + "…";
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
 			}
-			Render.text(graphics, fontOf(screen), value, bx + 5.0F, y + (height - 8.0F) * 0.5F - 0.5F, theme.text, false);
-		}
-
-		@Override
-		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (isHovered(mouseX, mouseY)) {
-				if (button == 1) {
-					setting.reset();
+			String value = Render.ellipsize(font(), text, width);
+			int argb = Render.alpha(color, alpha);
+			if (centered) {
+				if (bold) {
+					Render.boldText(graphics, font(), value, centerX() - font().width(value) * 0.5F, y + appearOffset(), argb, false);
 				} else {
-					screen.openTextEditor(setting);
+					Render.centeredText(graphics, font(), value, centerX(), y + appearOffset(), argb, false);
 				}
-				return true;
+			} else if (bold) {
+				Render.boldText(graphics, font(), value, x, y + appearOffset(), argb, false);
+			} else {
+				Render.text(graphics, font(), value, x, y + appearOffset(), argb, false);
 			}
-			return false;
 		}
 	}
 
-	/** Copies fixed text to the clipboard; used for generated values (coordinates, IPs). */
-	public static final class CopyField extends UiComponent {
-		private final ChaosScreen screen;
-		private final java.util.function.Supplier<String> textSupplier;
+	/** Thin progress/status element used by the footer and by list screens. */
+	public static final class StatusChip extends UiComponent {
+		private final String text;
+		private int color;
+		private boolean pulsing;
 
-		public CopyField(ChaosScreen screen, String label, java.util.function.Supplier<String> textSupplier) {
-			this.screen = screen;
-			this.textSupplier = textSupplier;
-			this.setTooltip(label);
+		public StatusChip(String text, int color) {
+			this.text = text;
+			this.color = color;
+		}
+
+		public void setText(String text) {
+			this.text = text;
+		}
+
+		public void setColor(int color) {
+			this.color = color;
+		}
+
+		public void setPulsing(boolean pulsing) {
+			this.pulsing = pulsing;
 		}
 
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			Render.roundedRect(graphics, x, y, width, height, theme.radius * 0.6F, Render.mix(theme.panelAlt, theme.panelHover, hover.get()));
-			Render.centeredText(graphics, fontOf(screen), "Copy", x + width * 0.5F, y + (height - 8.0F) * 0.5F - 0.5F, theme.text, false);
-		}
-
-		@Override
-		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (isHovered(mouseX, mouseY) && button == 0) {
-				Clipboard.copyText(textSupplier.get());
-				playClick(screen, true);
-				return true;
+			float alpha = alpha();
+			if (alpha <= 0.01F) {
+				return;
 			}
-			return false;
+			UiTheme theme = UiTheme.get();
+			float pulse = pulsing ? 0.5F + 0.5F * Anim.pulse((float) (System.nanoTime() / 1.0E9), 2.0F) : 1.0F;
+			float dotRadius = 3.0F;
+			Ui.dot(graphics, x + dotRadius + 1.0F, centerY(), dotRadius,
+					Render.alpha(color, alpha * pulse));
+			Render.text(graphics, font(), Render.ellipsize(font(), text, width - 14.0F), x + 12.0F, centerY() - 4.0F,
+					Render.alpha(theme.textDim, alpha), false);
 		}
 	}
 
-	/** Creates the control matching a setting, laid out for a settings row. */
-	public static UiComponent forSetting(Setting<?> setting, ChaosScreen screen) {
+	/** Returns a vertical list of the settings of a module, wrapped in their rows. */
+	public static List<UiComponent> rowsFor(List<Setting<?>> settings, ChaosScreen screen, float width) {
+		List<UiComponent> rows = new ArrayList<>();
+		for (Setting<?> setting : settings) {
+			UiComponent row = forSetting(setting, screen);
+			if (row == null) {
+				continue;
+			}
+			row.setBounds(0.0F, 0.0F, width, rowHeight(setting));
+			row.setTooltip(setting.description);
+			rows.add(row);
+		}
+		return rows;
+	}
+
+	public static float rowHeight(Setting<?> setting) {
 		return switch (setting.kind()) {
-			case TOGGLE -> new Toggle(screen, (Setting.Toggle) setting);
-			case NUMBER -> new Slider(screen, (Setting.Number) setting);
-			case CHOICE -> new Choice(screen, (Setting.Choice) setting);
-			case COLOR -> new ColorField(screen, (Setting.Color) setting);
-			case KEY -> new KeyField(screen, (Setting.Key) setting);
-			case POSITION -> new PositionField(screen, (Setting.Position) setting);
-			case TEXT -> new TextField(screen, (Setting.Text) setting);
-			case ACTION -> new ActionField(screen, (Setting.Action) setting);
+			case NUMBER -> 26.0F;
+			case TOGGLE, CHOICE, COLOR, KEY, TEXT, POSITION, ACTION -> 22.0F;
 		};
 	}
 
-	// ------------------------------------------------------------------- popups
-
-	/** Modal editor for text settings, reusing a single {@link net.minecraft.client.gui.components.EditBox}. */
-	public static final class TextPopup extends UiComponent {
-		private final ChaosScreen screen;
-		private float buttonY;
-
-		public TextPopup(ChaosScreen screen) {
-			this.screen = screen;
-		}
-
-		public void layout(float px, float py, float width, float height, net.minecraft.client.gui.components.EditBox input) {
-			setBounds(px, py, width, height);
-			if (input != null) {
-				input.setX(Math.round(px + 14.0F));
-				input.setY(Math.round(py + 34.0F));
-				input.setWidth(Math.round(width - 28.0F));
-			}
-			buttonY = py + height - 30.0F;
-		}
-
-		@Override
-		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			Render.shadowedPanel(graphics, x, y, width, height, theme.radius, theme.panel, theme.accent);
-			Render.roundedRect(graphics, x + 14.0F, y + 32.0F, width - 28.0F, 20.0F, 4.0F, 0xFF0E0E14);
-			renderButton(graphics, mouseX, mouseY, "Accept", x + width - 176.0F, buttonY, theme.accent);
-			renderButton(graphics, mouseX, mouseY, "Cancel", x + width - 88.0F, buttonY, 0xFF4A4A5A);
-		}
-
-		private void renderButton(GuiGraphics graphics, float mouseX, float mouseY, String label, float bx, float by, int accent) {
-			UiTheme theme = UiTheme.get();
-			boolean hovered = mouseX >= bx && mouseX <= bx + 80.0F && mouseY >= by && mouseY <= by + 20.0F;
-			int color = Render.mix(theme.panelAlt, Render.brighten(accent, 0.2F), hovered ? 0.9F : 0.15F);
-			Render.roundedRect(graphics, bx, by, 80.0F, 20.0F, 5.0F, color);
-			Render.centeredText(graphics, screen.font(), label, bx + 40.0F, by + 6.0F, theme.text, false);
-		}
-
-		@Override
-		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (button != 0) {
-				return false;
-			}
-			if (mouseX >= x + width - 176.0F && mouseX <= x + width - 96.0F && mouseY >= buttonY && mouseY <= buttonY + 20.0F) {
-				screen.closePopup(true);
-				return true;
-			}
-			if (mouseX >= x + width - 88.0F && mouseX <= x + width - 8.0F && mouseY >= buttonY && mouseY <= buttonY + 20.0F) {
-				screen.closePopup(false);
-				return true;
-			}
-			return contains(mouseX, mouseY);
-		}
-	}
-
-	/** Compact HSV + alpha picker used for every colour setting. */
-	public static final class ColorPicker extends UiComponent {
-		private final ChaosScreen screen;
-		private final Setting.Color setting;
-		private float hue;
-		private float saturation;
-		private float brightness;
-		private float alpha;
-		private int draggingRow = -1;
-		private float rowX;
-		private float rowWidth;
-		private float firstRowY;
-		private float rowHeight;
-		private float rowGap;
-
-		public ColorPicker(ChaosScreen screen, Setting.Color setting) {
-			this.screen = screen;
-			this.setting = setting;
-			int color = setting.get();
-			float[] hsv = Render.toHsv(color);
-			this.hue = hsv[0];
-			this.saturation = hsv[1];
-			this.brightness = hsv[2];
-			this.alpha = Render.alphaOf(color) / 255.0F;
-		}
-
-		public void layout(float px, float py, float width, float height) {
-			setBounds(px, py, width, height);
-			this.rowX = px + 14.0F;
-			this.rowWidth = width - 28.0F;
-			this.firstRowY = py + 34.0F;
-			this.rowHeight = 12.0F;
-			this.rowGap = 8.0F;
-		}
-
-		private int argb() {
-			return Render.fromHsv(hue, saturation, brightness) & 0xFFFFFF | (Math.round(alpha * 255.0F) << 24);
-		}
-
-		@Override
-		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
-			UiTheme theme = UiTheme.get();
-			Render.shadowedPanel(graphics, x, y, width, height, theme.radius, theme.panel, theme.accent);
-			renderRow(graphics, 0, "Hue", hue, 0.0F, 1.0F);
-			renderRow(graphics, 1, "Saturation", saturation, 0.0F, 1.0F);
-			renderRow(graphics, 2, "Brightness", brightness, 0.0F, 1.0F);
-			if (setting.alphaAllowed()) {
-				renderRow(graphics, 3, "Opacity", alpha, 0.0F, 1.0F);
-			}
-			float previewY = y + height - 34.0F;
-			Render.roundedRect(graphics, x + 14.0F, previewY, width - 100.0F, 20.0F, 5.0F, argb());
-			Render.text(graphics, screen.font(), String.format("#%08X", argb()), x + 20.0F, previewY + 6.0F, 0xFFF2F2F7, true);
-			boolean hovered = mouseX >= x + width - 80.0F && mouseX <= x + width - 8.0F && mouseY >= previewY && mouseY <= previewY + 20.0F;
-			int buttonColor = Render.mix(theme.panelAlt, theme.accent, hovered ? 0.75F : 0.2F);
-			Render.roundedRect(graphics, x + width - 80.0F, previewY, 72.0F, 20.0F, 5.0F, buttonColor);
-			Render.centeredText(graphics, screen.font(), "Done", x + width - 44.0F, previewY + 6.0F, theme.text, false);
-		}
-
-		private void renderRow(GuiGraphics graphics, int index, String label, float value, float min, float max) {
-			UiTheme theme = UiTheme.get();
-			float rowY = firstRowY + index * (rowHeight + rowGap);
-			Render.text(graphics, screen.font(), label, rowX, rowY - 1.0F, theme.textDim, false);
-			float trackX = rowX + 76.0F;
-			float trackWidth = rowWidth - 76.0F;
-			// Gradient track composed of strips - cheap and shader free.
-			int strips = 24;
-			for (int i = 0; i < strips; i++) {
-				float t = i / (float) strips;
-				int color = switch (index) {
-					case 0 -> Render.fromHsv(t, 0.9F, 1.0F);
-					case 1 -> Render.fromHsv(hue, t, brightness);
-					case 2 -> Render.fromHsv(hue, saturation, t);
-					default -> Render.fromHsv(hue, saturation, brightness) & 0xFFFFFF | (Math.round(t * 255.0F) << 24);
-				};
-				Render.rect(graphics, trackX + t * trackWidth, rowY, trackWidth / strips + 1.0F, rowHeight, color);
-			}
-			float knob = (value - min) / (max - min);
-			float knobX = trackX + knob * trackWidth;
-			Render.roundedRect(graphics, knobX - 2.0F, rowY - 2.0F, 4.0F, rowHeight + 4.0F, 2.0F, 0xFFFFFFFF);
-		}
-
-		@Override
-		public boolean mouseClicked(float mouseX, float mouseY, int button) {
-			if (!contains(mouseX, mouseY) || button != 0) {
-				return false;
-			}
-			float previewY = y + height - 34.0F;
-			if (mouseY >= previewY && mouseY <= previewY + 20.0F && mouseX >= x + width - 80.0F) {
-				screen.closePopup(true);
-				return true;
-			}
-			for (int index = 0; index < 4; index++) {
-				float rowY = firstRowY + index * (rowHeight + rowGap);
-				if (mouseY >= rowY - 3.0F && mouseY <= rowY + rowHeight + 3.0F) {
-					draggingRow = index;
-					applyDrag(mouseX);
-					return true;
-				}
-			}
-			return true;
-		}
-
-		@Override
-		public boolean mouseDragged(float mouseX, float mouseY, int button, float deltaX, float deltaY) {
-			if (draggingRow >= 0) {
-				applyDrag(mouseX);
-				return true;
-			}
-			return false;
-		}
-
-		@Override
-		public boolean mouseReleased(float mouseX, float mouseY, int button) {
-			if (draggingRow >= 0) {
-				draggingRow = -1;
-				commit();
-				return true;
-			}
-			return false;
-		}
-
-		private void applyDrag(float mouseX) {
-			float trackX = rowX + 76.0F;
-			float trackWidth = rowWidth - 76.0F;
-			float value = Anim.clamp01((mouseX - trackX) / trackWidth);
-			switch (draggingRow) {
-				case 0 -> hue = value;
-				case 1 -> saturation = value;
-				case 2 -> brightness = value;
-				case 3 -> alpha = value;
-				default -> {
-				}
-			}
-			commit();
-		}
-
-		private void commit() {
-			setting.set(argb());
-		}
-	}
 }
