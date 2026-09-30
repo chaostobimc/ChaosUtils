@@ -15,7 +15,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(Entity.class)
 public class EntityMixin {
 	@Inject(method = "remove", at = @At("HEAD"), require = 0)
-	private void chaosutils$dropEntityState(Entity.RemovalReason reason, CallbackInfo info) {
+	private void chaosutils$dropEntityState(CallbackInfo info) {
 		ApiCompat.seen("entity.remove");
 		try {
 			Features.pruneEntityCaches(((Entity) (Object) this).getId());

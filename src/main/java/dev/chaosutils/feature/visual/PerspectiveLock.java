@@ -187,7 +187,7 @@ public final class PerspectiveLock implements Feature {
 	}
 
 	/** Applied from the camera mixin after vanilla computed the camera. */
-	public static void applyToCamera(Camera camera, Entity entity, float partialTick) {
+	public static void applyToCamera(Camera camera) {
 		if (!active || camera == null) {
 			return;
 		}

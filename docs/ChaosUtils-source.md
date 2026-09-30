@@ -9201,7 +9201,7 @@ public final class PerspectiveLock implements Feature {
 	}
 
 	/** Applied from the camera mixin after vanilla computed the camera. */
-	public static void applyToCamera(Camera camera, Entity entity, float partialTick) {
+	public static void applyToCamera(Camera camera) {
 		if (!active || camera == null) {
 			return;
 		}
@@ -12201,8 +12201,6 @@ package dev.chaosutils.mixin;
 import dev.chaosutils.core.ApiCompat;
 import dev.chaosutils.feature.visual.PerspectiveLock;
 import net.minecraft.client.Camera;
-import net.minecraft.world.entity.Entity;
-import net.minecraft.world.level.Level;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -12215,17 +12213,22 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * movement are never touched, which keeps the feature purely cosmetic and safe on servers.
  * The rotation is also remembered so {@code Projection} can keep HUD markers aligned with
  * what the player actually sees.
+ *
+ * <p>The handler deliberately takes no target arguments: everything it needs can be read
+ * from the camera itself. A handler without parameters can never fail the descriptor check
+ * that {@code setup(...)} argument lists are subject to, so a future Minecraft update cannot
+ * turn this into a startup crash.
  */
 @Mixin(Camera.class)
 public class CameraMixin {
 	@Inject(method = "setup", at = @At("TAIL"), require = 0)
-	private void chaosutils$lockRotation(Level level, Entity entity, boolean detached, boolean thirdPersonReverse, float partialTick, CallbackInfo info) {
+	private void chaosutils$lockRotation(CallbackInfo info) {
 		ApiCompat.seen("camera.setup");
 		if (!PerspectiveLock.isActive()) {
 			return;
 		}
 		try {
-			PerspectiveLock.applyToCamera((Camera) (Object) this, entity, partialTick);
+			PerspectiveLock.applyToCamera((Camera) (Object) this);
 		} catch (Throwable ignored) {
 			// Keep the vanilla camera if anything goes wrong.
 		}
@@ -12299,7 +12302,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(Entity.class)
 public class EntityMixin {
 	@Inject(method = "remove", at = @At("HEAD"), require = 0)
-	private void chaosutils$dropEntityState(Entity.RemovalReason reason, CallbackInfo info) {
+	private void chaosutils$dropEntityState(CallbackInfo info) {
 		ApiCompat.seen("entity.remove");
 		try {
 			Features.pruneEntityCaches(((Entity) (Object) this).getId());
@@ -12356,7 +12359,6 @@ package dev.chaosutils.mixin;
 import dev.chaosutils.core.ApiCompat;
 import dev.chaosutils.feature.visual.CrosshairDesigner;
 import net.minecraft.client.gui.Gui;
-import net.minecraft.client.gui.GuiGraphics;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -12367,11 +12369,18 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  *
  * <p>Only the crosshair is cancelled, and only when the feature is enabled - everything
  * else in the HUD keeps running untouched.
+ *
+ * <p>The handler takes no target arguments on purpose. Vanilla passed the crosshair a
+ * {@code GuiGraphics} and a {@code DeltaTracker} in 1.21.11; a handler that lists arguments
+ * has to match them exactly or Mixin aborts the whole launch (that is what produced the
+ * first in-game crash). With an empty argument list there is nothing left to mismatch -
+ * Mixin accepts it for any signature, and {@code info.cancel()} still skips the vanilla
+ * crosshair.
  */
 @Mixin(Gui.class)
 public class GuiMixin {
 	@Inject(method = "renderCrosshair", at = @At("HEAD"), cancellable = true, require = 0)
-	private void chaosutils$replaceCrosshair(GuiGraphics graphics, CallbackInfo info) {
+	private void chaosutils$replaceCrosshair(CallbackInfo info) {
 		ApiCompat.seen("gui.crosshair");
 		try {
 			if (CrosshairDesigner.replacesVanilla()) {

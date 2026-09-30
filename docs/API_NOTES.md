@@ -131,6 +131,52 @@ Fabric API parts (branch `1.21.11`, version `0.141.6+1.21.11`):
 Everything else risky is wrapped in `try/catch` and guarded by `ApiCompat.seen(...)`, so a future
 rename degrades a single feature instead of crashing the game.
 
+### Mixin handlers must match the target signature exactly
+
+A mixin handler that lists arguments has to reproduce the target method's argument list
+(types, in order, minus the trailing `CallbackInfo`/`CallbackInfoReturnable`). Mixin does
+**not** degrade gracefully when they differ: it aborts the transformation of the class and
+the game dies during startup with
+
+```
+InvalidInjectionException: Invalid descriptor on ...GuiMixin->@Inject::...
+Expected (Lnet/minecraft/class_332;Lnet/minecraft/class_9779;...;)V
+but found (Lnet/minecraft/class_332;...;CallbackInfo;)V
+```
+
+`require = 0` does not help here - it only covers a *missing* target method, not a
+mismatched handler. Two rules follow from this:
+
+1. **Handlers that do not need target arguments take none.** `GuiMixin` (crosshair),
+   `CameraMixin` (perspective lock) and `EntityMixin` (cache pruning) only need
+   `CallbackInfo`; an empty argument list can never mismatch, whatever arguments a future
+   Minecraft version adds to the target method.
+2. **Handlers that do need arguments are verified by a script.** `tools/mixin_check.py`
+   compares every `@Inject` handler with the real, decompiled Minecraft sources and exits
+   non-zero on a mismatch:
+
+   ```
+   python3 tools/mixin_check.py --mirror /path/to/minecraft-sources
+   ```
+
+   Run it after every Minecraft update, before launching the game.
+
+Reference signatures used in this mod (all confirmed against the `1.21.11_unobfuscated`
+sources):
+
+| Mixin | Target signature |
+| --- | --- |
+| `GuiMixin` | `Gui#renderCrosshair(GuiGraphics, DeltaTracker)` |
+| `CameraMixin` | `Camera#setup(Level, Entity, boolean, boolean, float)` |
+| `GameRendererMixin` | `GameRenderer#getFov(Camera, float, boolean)` -> `float` |
+| `SoundEngineMixin` | `SoundEngine#play(SoundInstance)` -> `PlayResult` |
+| `ParticleEngineMixin` | `ParticleEngine#createParticle(ParticleOptions, double, double, double, double, double, double)` |
+| `MouseHandlerMixin` | `MouseHandler#onScroll(long, double, double)` |
+| `DebugScreenOverlayMixin` | `DebugScreenOverlay#render(GuiGraphics)` |
+| `AbstractContainerScreenMixin` | `AbstractContainerScreen#render(GuiGraphics, int, int, float)` |
+| `EntityMixin` | `Entity#remove(Entity.RemovalReason)` |
+| `CameraAccessor` / `AbstractContainerScreenAccessor` | `Camera#setRotation` (invoker), `leftPos`/`topPos`/`imageWidth`/`imageHeight` (accessors) |
+
 ## Fair play statement
 
 Every feature follows the same three rules:
