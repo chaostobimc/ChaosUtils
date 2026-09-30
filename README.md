@@ -111,7 +111,7 @@ src/main/java/dev/chaosutils/
 │   ├── FeatureRegistry.java   the full module list in one readable place
 │   ├── radial/                the radial menu feature + screen
 │   ├── hud/ visual/ inventory/ chat/ audio/ qol/ performance/
-├── gui/                       click GUI, component toolkit, theme, HUD editor, sub-screens
+├── gui/                       click GUI, component toolkit, theme, backdrop, HUD editor, sub-screens
 ├── mixin/                     10 small, read-only integrations + 1 accessor (see docs/API_NOTES.md)
 ├── tools/                     mixin_check.py - verifies every mixin handler against the Minecraft sources
 └── util/                      animation, drawing, projection, item/enchant/sound lookup, positions

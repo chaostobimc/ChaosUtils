@@ -131,6 +131,49 @@ Fabric API parts (branch `1.21.11`, version `0.141.6+1.21.11`):
 Everything else risky is wrapped in `try/catch` and guarded by `ApiCompat.seen(...)`, so a future
 rename degrades a single feature instead of crashing the game.
 
+### The screen render pipeline changed in 1.21.9+ (one blur per frame)
+
+`Screen#renderWithTooltipAndSubtitles` is `final` and paints the background itself:
+
+```java
+public final void renderWithTooltipAndSubtitles(GuiGraphics graphics, int mouseX, int mouseY, float a) {
+    graphics.nextStratum();
+    this.renderBackground(graphics, mouseX, mouseY, a);   // <- blur happens here
+    graphics.nextStratum();
+    this.render(graphics, mouseX, mouseY, a);             // <- mod screen code runs here
+    graphics.renderDeferredElements();
+}
+```
+
+`renderBackground(...)` ends in `Screen#renderBlurredBackground` and calls
+`GuiGraphics#blurBeforeThisStratum()`. `GuiRenderState` keeps exactly one blur slot per frame
+(`firstStratumAfterBlur`) and throws `IllegalStateException("Can only blur once per frame")` on the
+second attempt - which is fatal, because it happens while Minecraft is rendering.
+
+So a custom screen must **never** call `renderBackground(...)` from its own `render(...)`. That was
+the second startup-level bug found in this project: pressing the GUI hotkey crashed the game on the
+first frame of the click GUI.
+
+ChaosUtils solves it with `gui/Backdrop.java`:
+
+* it paints only the theme tint and gradient on top of the background vanilla already drew;
+* it asks for the blur only when the vanilla "Menu background blurriness" option is `0`
+  (`Options#getMenuBackgroundBlurriness() >= 1` means vanilla already blurred), and even that call is
+  wrapped in a `try/catch` so a blur claimed by another mod cannot crash the game;
+* `backdropStyle == 3` ("Transparent") draws nothing at all.
+
+All five former `renderBackground(...)` call sites (click GUI, text input, list screens, radial
+editor, HUD editor) now go through that helper.
+
+### Integration hooks are reported after a world join, and "not called yet" is not a failure
+
+`ApiCompat.seen(hook)` is called from inside each injected method, so a hook only counts as live once
+the vanilla method has actually run. In-world hooks (camera, particles, entity removal, container
+screens, FOV, crosshair, mouse wheel) therefore show up as unobserved while the player is still in
+the main menu - they are not broken. The report is now printed 60 ticks after the first world join
+and says "not called yet" instead of claiming that features were disabled (nothing is ever disabled
+because of an unobserved hook: a mixin that did not apply simply leaves a feature without input).
+
 ### Mixin handlers must match the target signature exactly
 
 A mixin handler that lists arguments has to reproduce the target method's argument list

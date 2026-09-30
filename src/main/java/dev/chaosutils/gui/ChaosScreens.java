@@ -72,8 +72,9 @@ public final class ChaosScreens {
 
 		@Override
 		public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-			renderBackground(graphics, mouseX, mouseY, partialTick);
 			UiTheme theme = UiTheme.get();
+			// Vanilla already drew the background for this frame; drawing it again would blur twice.
+			Backdrop.render(graphics, this, theme);
 			int boxWidth = Math.min(260, this.width - 60) + 16;
 			int x = (this.width - boxWidth) / 2;
 			int y = this.height / 2 - 30;
@@ -165,8 +166,7 @@ public final class ChaosScreens {
 		@Override
 		protected void renderBackdrop(GuiGraphics graphics, int mouseX, int mouseY, float deltaTicks) {
 			UiTheme theme = theme();
-			renderBackground(graphics, mouseX, mouseY, deltaTicks);
-			Render.rect(graphics, 0.0F, 0.0F, this.width, this.height, theme.background);
+			Backdrop.render(graphics, this, theme);
 			Render.shadowedPanel(graphics, 12.0F, 12.0F, this.width - 24.0F, this.height - 24.0F, theme.radius,
 					theme.panel, theme.accent);
 			Render.text(graphics, font(), heading, 20.0F, 22.0F, theme.text, false);
@@ -385,8 +385,7 @@ public final class ChaosScreens {
 		@Override
 		protected void renderBackdrop(GuiGraphics graphics, int mouseX, int mouseY, float deltaTicks) {
 			UiTheme theme = theme();
-			renderBackground(graphics, mouseX, mouseY, deltaTicks);
-			Render.rect(graphics, 0.0F, 0.0F, this.width, this.height, theme.background);
+			Backdrop.render(graphics, this, theme);
 			Render.shadowedPanel(graphics, 12.0F, 12.0F, this.width - 24.0F, this.height - 24.0F, theme.radius,
 					theme.panel, theme.accent);
 			Render.text(graphics, font(), "Radial Menu", 20.0F, 22.0F, theme.text, false);

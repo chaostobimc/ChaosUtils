@@ -60,8 +60,8 @@ public final class HudEditorScreen extends Screen {
 		lastMouseX = mouseX;
 		lastMouseY = mouseY;
 		UiTheme theme = UiTheme.get();
-		renderBackground(graphics, mouseX, mouseY, deltaTicks);
-		Render.rect(graphics, 0.0F, 0.0F, width, height, theme.background);
+		// Never call renderBackground here - vanilla already did that (and used the frame's blur).
+		Backdrop.render(graphics, this, theme);
 
 		float panelWidth = 190.0F;
 		Render.shadowedPanel(graphics, 10.0F, 10.0F, panelWidth, height - 20.0F, theme.radius, theme.panel, theme.accent);

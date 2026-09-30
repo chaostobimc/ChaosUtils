@@ -172,17 +172,13 @@ public abstract class ChaosScreen extends Screen {
 		super.render(graphics, mouseX, mouseY, deltaTicks);
 	}
 
+	/**
+	 * Paints the theme backdrop. Delegates to {@link Backdrop}, which never calls the vanilla
+	 * {@code renderBackground(...)} - the game already ran that (including the frame's only blur)
+	 * before this method is reached, and a second call throws.
+	 */
 	protected void renderBackdrop(GuiGraphics graphics, int mouseX, int mouseY, float deltaTicks) {
-		if (theme().backdropStyle == 3) {
-			return;
-		}
-		if (theme().blur) {
-			renderBackground(graphics, mouseX, mouseY, deltaTicks);
-		}
-		Render.rect(graphics, 0.0F, 0.0F, this.width, this.height, theme().background);
-		if (theme().backdropStyle == 0) {
-			Render.verticalGradient(graphics, 0.0F, 0.0F, this.width, this.height, 0x00000000, 0x66000000);
-		}
+		Backdrop.render(graphics, this, theme());
 	}
 
 	private void renderTooltipLayer(GuiGraphics graphics, float mouseX, float mouseY) {

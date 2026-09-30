@@ -1533,9 +1533,10 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Every injector that targets a method whose name is not guaranteed across Minecraft
  * versions is declared with {@code require = 0}: if a future patch release moves it,
- * ChaosUtils keeps running, the affected feature silently degrades and this class - which
- * is polled on the first few ticks - logs exactly what is missing instead of crashing the
- * game at startup.
+ * ChaosUtils keeps running, the affected feature silently degrades and this class logs
+ * exactly what is missing instead of crashing the game at startup. The handlers are also
+ * deliberately parameterless where possible, because a handler that lists arguments has to
+ * match the target signature exactly or Mixin refuses to apply the whole class.
  */
 public final class ApiCompat {
 	private static final Logger LOGGER = LoggerFactory.getLogger("ChaosUtils/Compat");
@@ -1558,26 +1559,34 @@ public final class ApiCompat {
 		return SEEN.containsKey(hook);
 	}
 
+	/**
+	 * Logs which integrations have been observed so far.
+	 *
+	 * <p>A hook is only marked as seen once the vanilla method it targets has actually run, so this
+	 * report is informative, not a verdict: hooks that only fire in game (camera, particles, entity
+	 * removal, container screens, the FOV) legitimately show up as "not called yet" while the player
+	 * is still in the main menu. Nothing is disabled because of a missing hook - a mixin that did not
+	 * apply simply leaves the corresponding feature with nothing to react to.
+	 */
 	public static void report() {
-		int missing = 0;
+		int pending = 0;
 		StringBuilder summary = new StringBuilder();
 		for (Map.Entry<String, String> entry : HOOKS.entrySet()) {
 			boolean live = active(entry.getKey());
 			if (!live) {
-				missing++;
+				pending++;
 			}
 			summary.append(System.lineSeparator())
 					.append("  ")
-					.append(live ? "[ ok ]   " : "[ MISS ] ")
+					.append(live ? "[ ok ]  " : "[  ..  ]")
+					.append(" ")
 					.append(entry.getKey())
 					.append(" -> ")
 					.append(entry.getValue());
 		}
-		LOGGER.info("Integration hooks:{}", summary);
-		if (missing > 0) {
-			LOGGER.warn("{} integration hook(s) did not apply on this Minecraft build. "
-					+ "Affected features are disabled automatically; everything else keeps working.", missing);
-		}
+		LOGGER.info("Integration hooks:{}{}", summary,
+				pending == 0 ? "" : System.lineSeparator() + "  (" + pending
+						+ " not called yet - that is normal for hooks that only fire in game)");
 	}
 }
 ```
@@ -3415,7 +3424,9 @@ public final class Features {
 
 	private static volatile float zoomFactor = 1.0F;
 	private static volatile boolean worldReady;
-	private static int reportDelay = 40;
+	/** Ticks after a world join before the hook report is printed; -1 means "nothing armed". */
+	private static int reportDelay = -1;
+	private static boolean hookReportPrinted;
 
 	private Features() {
 	}
@@ -3458,6 +3469,11 @@ public final class Features {
 	public static void onWorldJoin() {
 		worldReady = true;
 		TickClock.reset();
+		// Give the in-world hooks (camera, particles, containers, FOV, ...) a chance to run before
+		// reporting which of them are live - at that point they have actually been exercised.
+		if (!hookReportPrinted && reportDelay < 0) {
+			reportDelay = 60;
+		}
 		for (Feature feature : FEATURES) {
 			feature.onWorldJoin();
 		}
@@ -3478,6 +3494,7 @@ public final class Features {
 	public static void tick(Minecraft client) {
 		TickClock.onClientTick();
 		if (reportDelay > 0 && --reportDelay == 0) {
+			hookReportPrinted = true;
 			dev.chaosutils.core.ApiCompat.report();
 		}
 		for (Feature feature : FEATURES) {
@@ -4180,6 +4197,96 @@ public final class RadialMenuScreen extends Screen {
 
 ## Click GUI
 
+### `src/main/java/dev/chaosutils/gui/Backdrop.java`
+
+```java
+package dev.chaosutils.gui;
+
+import dev.chaosutils.util.Render;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.screens.Screen;
+
+/**
+ * Draws the ChaosUtils backdrop for a screen without touching vanilla's background pass.
+ *
+ * <h2>Why this class exists</h2>
+ * Since 1.21.9 the game paints a screen's background itself:
+ *
+ * <pre>
+ * public final void renderWithTooltipAndSubtitles(GuiGraphics graphics, ...) {
+ *     graphics.nextStratum();
+ *     this.renderBackground(graphics, mouseX, mouseY, a);   // blur happens here
+ *     graphics.nextStratum();
+ *     this.render(graphics, mouseX, mouseY, a);             // our code runs here
+ * }
+ * </pre>
+ *
+ * <p>{@code renderBackground(...)} ends up in {@code Screen#renderBlurredBackground}, which calls
+ * {@code GuiGraphics#blurBeforeThisStratum()}. The render state allows exactly one blur per frame
+ * and throws {@code IllegalStateException("Can only blur once per frame")} on the second attempt.
+ * A screen that calls {@code renderBackground(...)} from its own {@code render()} therefore kills
+ * the game on the very first frame it is shown - that is exactly what happened the first time the
+ * click GUI was opened.
+ *
+ * <p>So this helper never calls {@code renderBackground}: it only paints the ChaosUtils tint on top
+ * of the background vanilla already drew, and asks for the blur itself <em>only</em> when the
+ * vanilla option has it switched off. Everything is wrapped so that a backdrop can never take the
+ * game down.
+ */
+public final class Backdrop {
+	/** "Dark gradient" - tint plus a soft gradient towards the bottom. */
+	public static final int STYLE_DARK_GRADIENT = 0;
+	/** "Blur + gradient" - same tint, the blur comes from the vanilla blur option. */
+	public static final int STYLE_BLUR_GRADIENT = 1;
+	/** "Flat" - tint only. */
+	public static final int STYLE_FLAT = 2;
+	/** "Transparent" - nothing at all, the world stays fully visible. */
+	public static final int STYLE_TRANSPARENT = 3;
+
+	private Backdrop() {
+	}
+
+	/**
+	 * Paints the backdrop of {@code screen}. Call this from {@code render(...)} or from
+	 * {@code renderBackdrop(...)} - never call {@link Screen#renderBackground} yourself.
+	 */
+	public static void render(GuiGraphics graphics, Screen screen, UiTheme theme) {
+		if (theme.backdropStyle == STYLE_TRANSPARENT) {
+			return;
+		}
+		requestBlur(graphics, theme);
+		Render.rect(graphics, 0.0F, 0.0F, screen.width, screen.height, theme.background);
+		if (theme.backdropStyle == STYLE_DARK_GRADIENT) {
+			Render.verticalGradient(graphics, 0.0F, 0.0F, screen.width, screen.height, 0x00000000, 0x66000000);
+		}
+	}
+
+	/**
+	 * Uses the frame's single blur slot when vanilla left it free.
+	 *
+	 * <p>Vanilla blurs whenever the "Menu background blurriness" option is 1 or higher, which is the
+	 * default; in that case the world behind the GUI is already blurred and there is nothing to do.
+	 * Only when the player switched that option off does ChaosUtils claim the slot - and even then
+	 * a failure is harmless, because another screen or mod may have used it already.
+	 */
+	private static void requestBlur(GuiGraphics graphics, UiTheme theme) {
+		if (!theme.blur) {
+			return;
+		}
+		try {
+			Minecraft client = Minecraft.getInstance();
+			if (client.options.getMenuBackgroundBlurriness() >= 1) {
+				return;
+			}
+			graphics.blurBeforeThisStratum();
+		} catch (Throwable ignored) {
+			// The blur slot is taken (or the API moved) - draw the GUI without the blur.
+		}
+	}
+}
+```
+
 ### `src/main/java/dev/chaosutils/gui/ChaosClickGui.java`
 
 ```java
@@ -4847,17 +4954,13 @@ public abstract class ChaosScreen extends Screen {
 		super.render(graphics, mouseX, mouseY, deltaTicks);
 	}
 
+	/**
+	 * Paints the theme backdrop. Delegates to {@link Backdrop}, which never calls the vanilla
+	 * {@code renderBackground(...)} - the game already ran that (including the frame's only blur)
+	 * before this method is reached, and a second call throws.
+	 */
 	protected void renderBackdrop(GuiGraphics graphics, int mouseX, int mouseY, float deltaTicks) {
-		if (theme().backdropStyle == 3) {
-			return;
-		}
-		if (theme().blur) {
-			renderBackground(graphics, mouseX, mouseY, deltaTicks);
-		}
-		Render.rect(graphics, 0.0F, 0.0F, this.width, this.height, theme().background);
-		if (theme().backdropStyle == 0) {
-			Render.verticalGradient(graphics, 0.0F, 0.0F, this.width, this.height, 0x00000000, 0x66000000);
-		}
+		Backdrop.render(graphics, this, theme());
 	}
 
 	private void renderTooltipLayer(GuiGraphics graphics, float mouseX, float mouseY) {
@@ -5149,8 +5252,9 @@ public final class ChaosScreens {
 
 		@Override
 		public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-			renderBackground(graphics, mouseX, mouseY, partialTick);
 			UiTheme theme = UiTheme.get();
+			// Vanilla already drew the background for this frame; drawing it again would blur twice.
+			Backdrop.render(graphics, this, theme);
 			int boxWidth = Math.min(260, this.width - 60) + 16;
 			int x = (this.width - boxWidth) / 2;
 			int y = this.height / 2 - 30;
@@ -5242,8 +5346,7 @@ public final class ChaosScreens {
 		@Override
 		protected void renderBackdrop(GuiGraphics graphics, int mouseX, int mouseY, float deltaTicks) {
 			UiTheme theme = theme();
-			renderBackground(graphics, mouseX, mouseY, deltaTicks);
-			Render.rect(graphics, 0.0F, 0.0F, this.width, this.height, theme.background);
+			Backdrop.render(graphics, this, theme);
 			Render.shadowedPanel(graphics, 12.0F, 12.0F, this.width - 24.0F, this.height - 24.0F, theme.radius,
 					theme.panel, theme.accent);
 			Render.text(graphics, font(), heading, 20.0F, 22.0F, theme.text, false);
@@ -5462,8 +5565,7 @@ public final class ChaosScreens {
 		@Override
 		protected void renderBackdrop(GuiGraphics graphics, int mouseX, int mouseY, float deltaTicks) {
 			UiTheme theme = theme();
-			renderBackground(graphics, mouseX, mouseY, deltaTicks);
-			Render.rect(graphics, 0.0F, 0.0F, this.width, this.height, theme.background);
+			Backdrop.render(graphics, this, theme);
 			Render.shadowedPanel(graphics, 12.0F, 12.0F, this.width - 24.0F, this.height - 24.0F, theme.radius,
 					theme.panel, theme.accent);
 			Render.text(graphics, font(), "Radial Menu", 20.0F, 22.0F, theme.text, false);
@@ -5869,8 +5971,8 @@ public final class HudEditorScreen extends Screen {
 		lastMouseX = mouseX;
 		lastMouseY = mouseY;
 		UiTheme theme = UiTheme.get();
-		renderBackground(graphics, mouseX, mouseY, deltaTicks);
-		Render.rect(graphics, 0.0F, 0.0F, width, height, theme.background);
+		// Never call renderBackground here - vanilla already did that (and used the frame's blur).
+		Backdrop.render(graphics, this, theme);
 
 		float panelWidth = 190.0F;
 		Render.shadowedPanel(graphics, 10.0F, 10.0F, panelWidth, height - 20.0F, theme.radius, theme.panel, theme.accent);

@@ -31,7 +31,9 @@ public final class Features {
 
 	private static volatile float zoomFactor = 1.0F;
 	private static volatile boolean worldReady;
-	private static int reportDelay = 40;
+	/** Ticks after a world join before the hook report is printed; -1 means "nothing armed". */
+	private static int reportDelay = -1;
+	private static boolean hookReportPrinted;
 
 	private Features() {
 	}
@@ -74,6 +76,11 @@ public final class Features {
 	public static void onWorldJoin() {
 		worldReady = true;
 		TickClock.reset();
+		// Give the in-world hooks (camera, particles, containers, FOV, ...) a chance to run before
+		// reporting which of them are live - at that point they have actually been exercised.
+		if (!hookReportPrinted && reportDelay < 0) {
+			reportDelay = 60;
+		}
 		for (Feature feature : FEATURES) {
 			feature.onWorldJoin();
 		}
@@ -94,6 +101,7 @@ public final class Features {
 	public static void tick(Minecraft client) {
 		TickClock.onClientTick();
 		if (reportDelay > 0 && --reportDelay == 0) {
+			hookReportPrinted = true;
 			dev.chaosutils.core.ApiCompat.report();
 		}
 		for (Feature feature : FEATURES) {
