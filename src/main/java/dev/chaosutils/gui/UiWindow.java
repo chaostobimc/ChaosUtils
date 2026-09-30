@@ -8,121 +8,100 @@ import net.minecraft.client.gui.GuiGraphics;
 /**
  * The floating window every ChaosUtils screen lives in.
  *
- * <p>It owns the geometry, the drag/resize interaction and the position memory, so screens only
- * describe their content. The window can be moved by its title bar (or any empty part of the
- * header), resized from the bottom-right corner and its edges, and is kept on screen at all times.
- * Double-clicking the title bar snaps it back to the centred default size.
+ * <p>The shell owns the geometry (drag, resize, persistence, opening and closing animation) while
+ * the screen owns the content. Content is laid out in window local coordinates starting at
+ * {@code (0, 0)} - the screen translates the pose by {@link #x()}/{@link #y()} while drawing and
+ * subtracts them while hit testing, so dragging never has to rebuild a single widget.
  */
 public final class UiWindow {
 	public static final float TITLE_HEIGHT = 34.0F;
-	public static final float MIN_WIDTH = 300.0F;
-	public static final float MIN_HEIGHT = 190.0F;
-	/** Distance from the window border that starts a resize drag. */
+	public static final float MIN_WIDTH = 360.0F;
+	public static final float MIN_HEIGHT = 220.0F;
+	private static final float RESIZE_GRIP = 16.0F;
 	private static final float EDGE = 5.0F;
-	private static final float CORNER = 14.0F;
 
-	private final String stateKey;
+	private final String key;
 	private float x;
 	private float y;
 	private float width;
 	private float height;
-	private float defaultWidth;
-	private float defaultHeight;
-	private int screenWidth;
-	private int screenHeight;
-	private boolean resizable = true;
 
+	private boolean draggable = true;
+	private boolean resizable = true;
 	private boolean dragging;
-	private boolean resizingWidth;
-	private boolean resizingHeight;
-	private float dragOffsetX;
-	private float dragOffsetY;
-	private float resizeStartWidth;
-	private float resizeStartHeight;
-	private float resizeStartX;
-	private float resizeStartY;
-	private boolean dirty;
+	private boolean resizing;
+	private float grabX;
+	private float grabY;
+	private float resizeFromWidth;
+	private float resizeFromHeight;
 	private boolean resized;
-	private long lastClickTime;
-	private float lastClickX;
-	private float lastClickY;
+	private boolean moved;
 
 	private final Anim.Value appear = new Anim.Value(0.0F, 9.0F);
-	private final Anim.Value closeAnim = new Anim.Value(0.0F, 13.0F);
-	private final Anim.Value gripHover = new Anim.Value(0.0F, 14.0F);
-	private boolean fadingOut;
+	private final Anim.Value close = new Anim.Value(0.0F, 13.0F);
+	private boolean closing;
 
-	public UiWindow(String stateKey, float defaultWidth, float defaultHeight) {
-		this.stateKey = stateKey;
-		this.defaultWidth = defaultWidth;
-		this.defaultHeight = defaultHeight;
-		this.width = defaultWidth;
-		this.height = defaultHeight;
+	public UiWindow(String key) {
+		this.key = key;
 	}
 
-	// -------------------------------------------------------------- lifecycle
+	// ------------------------------------------------------------------ state
 
-	/** Places the window: remembered position when available, centred otherwise. */
-	public void open(int screenWidth, int screenHeight) {
-		this.screenWidth = screenWidth;
-		this.screenHeight = screenHeight;
-		float maxWidth = screenWidth - 24.0F;
-		float maxHeight = screenHeight - 24.0F;
-		this.defaultWidth = Math.min(defaultWidth, maxWidth);
-		this.defaultHeight = Math.min(defaultHeight, maxHeight);
-		float storedWidth = ChaosConfig.uiFloat(stateKey + ".width", defaultWidth);
-		float storedHeight = ChaosConfig.uiFloat(stateKey + ".height", defaultHeight);
-		this.width = Anim.clamp(storedWidth, MIN_WIDTH, maxWidth);
-		this.height = Anim.clamp(storedHeight, MIN_HEIGHT, maxHeight);
-		float storedX = ChaosConfig.uiFloat(stateKey + ".x", Float.NaN);
-		float storedY = ChaosConfig.uiFloat(stateKey + ".y", Float.NaN);
-		this.x = Float.isNaN(storedX) ? Math.round((screenWidth - width) * 0.5F) : storedX;
-		this.y = Float.isNaN(storedY) ? Math.round((screenHeight - height) * 0.5F) : storedY;
-		clampToScreen();
+	/** Restores the remembered geometry (clamped to this screen) or centres the default size. */
+	public void open(int screenWidth, int screenHeight, float preferredWidth, float preferredHeight) {
+		float maxWidth = Math.max(MIN_WIDTH, screenWidth - 40.0F);
+		float maxHeight = Math.max(MIN_HEIGHT, screenHeight - 40.0F);
+		width = Anim.clamp(ChaosConfig.uiFloat(key + ".width", preferredWidth), MIN_WIDTH, maxWidth);
+		height = Anim.clamp(ChaosConfig.uiFloat(key + ".height", preferredHeight), MIN_HEIGHT, maxHeight);
+		x = ChaosConfig.uiFloat(key + ".x", Float.NaN);
+		y = ChaosConfig.uiFloat(key + ".y", Float.NaN);
+		if (Float.isNaN(x) || Float.isNaN(y)) {
+			center(screenWidth, screenHeight);
+		} else {
+			x = Anim.clamp(x, 8.0F, Math.max(8.0F, screenWidth - width - 8.0F));
+			y = Anim.clamp(y, 8.0F, Math.max(8.0F, screenHeight - height - 8.0F));
+		}
 		appear.snap(0.0F);
-		closeAnim.snap(0.0F);
-		fadingOut = false;
+		close.snap(0.0F);
+		closing = false;
 	}
 
-	public void beginClose() {
-		if (!fadingOut) {
-			fadingOut = true;
-			closeAnim.snap(0.0F);
-			closeAnim.set(1.0F);
-		}
-	}
-
-	/** @return true once the closing animation has finished. */
-	public boolean isGone() {
-		return fadingOut && closeAnim.get() > 0.985F;
-	}
-
-	public void update(float deltaSeconds, float mouseX, float mouseY) {
-		appear.set(1.0F);
-		appear.update(UiTheme.get().speed(9.0F));
-		gripHover.set(isOverResizeGrip(mouseX, mouseY) ? 1.0F : 0.0F);
-		gripHover.update(UiTheme.get().speed(14.0F));
-		if (fadingOut) {
-			closeAnim.update(UiTheme.get().speed(13.0F));
-		}
-	}
-
+	/** Instantly shows the window; used by screens that are opened as a tool, not entered. */
 	public void snapOpen() {
 		appear.snap(1.0F);
+		close.snap(0.0F);
+		closing = false;
 	}
 
-	/** Combined fade (opening and closing) used for every colour the window draws. */
-	public float alpha() {
-		return Anim.clamp01(appear.get()) * (1.0F - Anim.easeOutQuint(closeAnim.get()));
+	public void close() {
+		if (!closing) {
+			closing = true;
+			close.set(1.0F);
+		}
 	}
 
-	public float slide() {
-		float opening = (1.0F - Anim.easeOutQuint(Anim.clamp01(appear.get()))) * 10.0F;
-		float closing = Anim.easeOutQuint(closeAnim.get()) * 14.0F;
-		return opening + closing;
+	public boolean isClosing() {
+		return closing;
 	}
 
-	// --------------------------------------------------------------- geometry
+	public boolean isGone() {
+		return closing && Anim.clamp01(close.get()) > 0.98F;
+	}
+
+	public void update(float deltaSeconds) {
+		appear.set(1.0F);
+		appear.update(UiTheme.get().speed(9.0F));
+		if (closing) {
+			close.update(UiTheme.get().speed(13.0F));
+		}
+	}
+
+	public void center(int screenWidth, int screenHeight) {
+		x = Math.round((screenWidth - width) * 0.5F);
+		y = Math.round((screenHeight - height) * 0.5F);
+	}
+
+	// ------------------------------------------------------------- geometry
 
 	public float x() {
 		return x;
@@ -148,49 +127,42 @@ public final class UiWindow {
 		return y + height;
 	}
 
-	/** Body starts below the title bar. */
-	public float bodyX() {
-		return x;
-	}
-
+	/** Top of the content area, in window local coordinates. */
 	public float bodyY() {
-		return y + titleHeight();
+		return TITLE_HEIGHT;
 	}
 
+	/** Height of the content area. */
+	public float bodyHeight() {
+		return height - TITLE_HEIGHT;
+	}
+
+	/** Width of the content area. */
 	public float bodyWidth() {
 		return width;
-	}
-
-	public float bodyHeight() {
-		return Math.max(0.0F, height - titleHeight());
 	}
 
 	public float titleHeight() {
 		return TITLE_HEIGHT;
 	}
 
-	public void setResizable(boolean resizable) {
-		this.resizable = resizable;
+	/** Alias kept for the screens: starts the closing animation. */
+	public void beginClose() {
+		close();
 	}
 
 	public void setSize(float width, float height) {
-		this.width = width;
-		this.height = height;
-		clampToScreen();
+		this.width = Math.max(MIN_WIDTH, width);
+		this.height = Math.max(MIN_HEIGHT, height);
 	}
 
 	public void setPosition(float x, float y) {
 		this.x = x;
 		this.y = y;
-		clampToScreen();
 	}
 
-	public void center() {
-		this.width = Math.min(defaultWidth, screenWidth - 24.0F);
-		this.height = Math.min(defaultHeight, screenHeight - 24.0F);
-		this.x = Math.round((screenWidth - width) * 0.5F);
-		this.y = Math.round((screenHeight - height) * 0.5F);
-		save();
+	public float titleCenterY() {
+		return y + TITLE_HEIGHT * 0.5F;
 	}
 
 	public boolean contains(float mouseX, float mouseY) {
@@ -198,109 +170,115 @@ public final class UiWindow {
 	}
 
 	public boolean isOverTitleBar(float mouseX, float mouseY) {
-		return mouseX >= x && mouseX <= right() && mouseY >= y && mouseY <= y + titleHeight();
+		return draggable && mouseX >= x && mouseX <= right() && mouseY >= y && mouseY <= y + TITLE_HEIGHT;
 	}
 
-	private boolean isOverResizeGrip(float mouseX, float mouseY) {
-		if (!resizable) {
-			return false;
-		}
-		boolean corner = mouseX >= right() - CORNER && mouseX <= right() + 1.0F
-				&& mouseY >= bottom() - CORNER && mouseY <= bottom() + 1.0F;
-		return corner;
+	public boolean isOverResizeGrip(float mouseX, float mouseY) {
+		return resizable && mouseX >= right() - RESIZE_GRIP && mouseX <= right() + 2.0F
+				&& mouseY >= bottom() - RESIZE_GRIP && mouseY <= bottom() + 2.0F;
 	}
 
-	// ---------------------------------------------------------------- drawing
+	public void setDraggable(boolean draggable) {
+		this.draggable = draggable;
+	}
 
+	public void setResizable(boolean resizable) {
+		this.resizable = resizable;
+	}
+
+	/** Combined alpha: opening animation times closing animation. */
+	public float alpha() {
+		return Anim.clamp01(appear.get()) * (1.0F - Anim.easeOutQuint(Anim.clamp01(close.get())));
+	}
+
+	/** Slide offset of the opening animation, in pixels. */
+	public float slide() {
+		return (1.0F - Anim.easeOutQuint(Anim.clamp01(appear.get()))) * 14.0F;
+	}
+
+	public boolean wasResized() {
+		boolean value = resized;
+		resized = false;
+		return value;
+	}
+
+	public boolean wasMoved() {
+		boolean value = moved;
+		moved = false;
+		return value;
+	}
+
+	/** Forgets the stored geometry so the next open centres the window again. */
+	public void resetGeometry() {
+		ChaosConfig.setUi(key + ".x", null);
+		ChaosConfig.setUi(key + ".y", null);
+		ChaosConfig.setUi(key + ".width", null);
+		ChaosConfig.setUi(key + ".height", null);
+	}
+
+	private void persist() {
+		ChaosConfig.setUi(key + ".x", x);
+		ChaosConfig.setUi(key + ".y", y);
+		ChaosConfig.setUi(key + ".width", width);
+		ChaosConfig.setUi(key + ".height", height);
+	}
+
+	// ----------------------------------------------------------------- render
+
+	/** Draws background, ring and title bar separator. Call before the content. */
 	public void renderShell(GuiGraphics graphics, UiTheme theme) {
 		float alpha = alpha();
 		if (alpha <= 0.01F) {
 			return;
 		}
-		float slide = slide();
-		Ui.window(graphics, x, y + slide, width, height, theme.radius, theme, alpha);
-		// Title bar: subtle separation from the body plus a hairline.
-		Render.scissor(graphics, x, y + slide, width, titleHeight());
-		Render.roundedRectGradient(graphics, x, y + slide, width, titleHeight() + theme.radius, theme.radius,
-				Render.alpha(0xFFFFFFFF, 0.045F * alpha), Render.alpha(0xFFFFFFFF, 0.0F));
-		Render.unscissor(graphics);
-		Render.rect(graphics, x + theme.radius, y + slide + titleHeight() - 1.0F, width - theme.radius * 2.0F, 1.0F,
+		float drawY = y + slide();
+		Ui.window(graphics, x, drawY, width, height, theme.radius, theme, alpha);
+		Ui.header(graphics, x, drawY, width, TITLE_HEIGHT, theme.radius, theme, alpha);
+		Render.rect(graphics, x + 1.0F, drawY + TITLE_HEIGHT - 1.0F, width - 2.0F, 1.0F,
 				Render.alpha(theme.outlineSoft, alpha));
-		renderResizeGrip(graphics, theme, alpha);
-	}
-
-	/** Three diagonal lines in the corner, brightening while the pointer is near. */
-	private void renderResizeGrip(GuiGraphics graphics, UiTheme theme, float alpha) {
-		if (!resizable) {
-			return;
-		}
-		float intensity = 0.18F + gripHover.get() * 0.5F;
-		int color = Render.alpha(theme.glow && gripHover.get() > 0.4F ? theme.accent : 0xFFFFFFFF, intensity * alpha);
-		for (int i = 0; i < 3; i++) {
-			float offset = 3.0F + i * 4.0F;
-			Render.line(graphics, right() - offset, bottom() - 3.0F, right() - 3.0F, bottom() - offset, 1.6F, color);
-		}
-		if (gripHover.get() > 0.05F) {
-			Render.glow(graphics, right() - 4.0F, bottom() - 4.0F, 16.0F + gripHover.get() * 10.0F, theme.accent,
-					0.28F * gripHover.get() * alpha);
-		}
 	}
 
 	// ------------------------------------------------------------------ input
 
-	/** @return true when the click was consumed by the window chrome (drag or resize). */
 	public boolean mouseClicked(float mouseX, float mouseY, int button) {
-		if (button != 0 || !contains(mouseX, mouseY)) {
+		if (button != 0 || closing) {
 			return false;
 		}
-		long now = System.currentTimeMillis();
-		if (isOverTitleBar(mouseX, mouseY)) {
-			boolean doubleClick = now - lastClickTime < 320L
-					&& Math.abs(mouseX - lastClickX) < 6.0F && Math.abs(mouseY - lastClickY) < 6.0F;
-			lastClickTime = now;
-			lastClickX = mouseX;
-			lastClickY = mouseY;
-			if (doubleClick) {
-				center();
-				return true;
-			}
-			dragging = true;
-			dragOffsetX = mouseX - x;
-			dragOffsetY = mouseY - y;
-			return true;
-		}
 		if (isOverResizeGrip(mouseX, mouseY)) {
-			resizingWidth = true;
-			resizingHeight = true;
-			resizeStartWidth = width;
-			resizeStartHeight = height;
-			resizeStartX = mouseX;
-			resizeStartY = mouseY;
+			resizing = true;
+			resizeFromWidth = width;
+			resizeFromHeight = height;
+			grabX = mouseX;
+			grabY = mouseY;
 			return true;
 		}
-		return false;
+		if (isOverTitleBar(mouseX, mouseY)) {
+			dragging = true;
+			grabX = mouseX - x;
+			grabY = mouseY - y;
+			return true;
+		}
+		return contains(mouseX, mouseY);
 	}
 
 	public boolean mouseDragged(float mouseX, float mouseY, int button) {
 		if (button != 0) {
 			return false;
 		}
-		if (dragging) {
-			x = mouseX - dragOffsetX;
-			y = mouseY - dragOffsetY;
-			clampToScreen();
-			dirty = true;
+		if (resizing) {
+			float newWidth = Math.max(MIN_WIDTH, resizeFromWidth + (mouseX - grabX));
+			float newHeight = Math.max(MIN_HEIGHT, resizeFromHeight + (mouseY - grabY));
+			if (Math.abs(newWidth - width) > 0.5F || Math.abs(newHeight - height) > 0.5F) {
+				width = newWidth;
+				height = newHeight;
+				resized = true;
+			}
 			return true;
 		}
-		if (resizingWidth || resizingHeight) {
-			if (resizingWidth) {
-				width = Math.max(MIN_WIDTH, resizeStartWidth + (mouseX - resizeStartX));
-			}
-			if (resizingHeight) {
-				height = Math.max(MIN_HEIGHT, resizeStartHeight + (mouseY - resizeStartY));
-			}
-			clampToScreen();
-			dirty = true;
+		if (dragging) {
+			x = mouseX - grabX;
+			y = mouseY - grabY;
+			moved = true;
 			return true;
 		}
 		return false;
@@ -310,41 +288,17 @@ public final class UiWindow {
 		if (button != 0) {
 			return false;
 		}
-		boolean wasActive = dragging || resizingWidth || resizingHeight;
-		resized = resizingWidth || resizingHeight;
+		boolean wasInteracting = dragging || resizing;
 		dragging = false;
-		resizingWidth = false;
-		resizingHeight = false;
-		if (wasActive && dirty) {
-			dirty = false;
-			save();
+		resizing = false;
+		if (wasInteracting) {
+			persist();
+			return true;
 		}
-		return wasActive;
-	}
-
-	/** True for exactly one call after a resize drag ended (used to rebuild a layout). */
-	public boolean wasResized() {
-		boolean value = resized;
-		resized = false;
-		return value;
+		return false;
 	}
 
 	public boolean isInteracting() {
-		return dragging || resizingWidth || resizingHeight;
-	}
-
-	private void clampToScreen() {
-		float minVisible = 70.0F;
-		width = Math.min(width, screenWidth - 8.0F);
-		height = Math.min(height, screenHeight - 8.0F);
-		x = Anim.clamp(x, minVisible - width, screenWidth - minVisible);
-		y = Anim.clamp(y, 2.0F, Math.max(2.0F, screenHeight - TITLE_HEIGHT - 4.0F));
-	}
-
-	private void save() {
-		ChaosConfig.setUi(stateKey + ".x", x);
-		ChaosConfig.setUi(stateKey + ".y", y);
-		ChaosConfig.setUi(stateKey + ".width", width);
-		ChaosConfig.setUi(stateKey + ".height", height);
+		return dragging || resizing;
 	}
 }

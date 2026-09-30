@@ -377,7 +377,7 @@ public final class Render {
 			if (net.minecraft.client.Minecraft.getInstance().getResourceManager().getResource(texture).isEmpty()) {
 				return false;
 			}
-			graphics.blit(com.mojang.blaze3d.pipeline.RenderPipelines.GUI_TEXTURED, texture, x0, y0, 0.0F, 0.0F,
+			graphics.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, texture, x0, y0, 0.0F, 0.0F,
 					x1 - x0, y1 - y0, 128, 128, 128, 128, color);
 			return true;
 		} catch (Throwable throwable) {

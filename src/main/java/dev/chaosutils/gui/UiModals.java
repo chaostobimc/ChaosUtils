@@ -159,6 +159,12 @@ public final class UiModals {
 			return dialog;
 		}
 
+		public static Dialog info(String title, String message) {
+			Dialog dialog = new Dialog(title, List.of(message.split("\n")));
+			dialog.add("Got it", null, Modal::close);
+			return dialog;
+		}
+
 		public Dialog add(String label, Integer color, Consumer<Dialog> action) {
 			Button button = new Button(label, color == null ? Button.Variant.GHOST : Button.Variant.SOFT,
 					color == null ? UiTheme.get().accent : color, () -> action.accept(this));

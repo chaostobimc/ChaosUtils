@@ -32,6 +32,8 @@ import net.minecraft.network.chat.Component;
 public abstract class ChaosScreen extends Screen {
 	protected final Screen parent;
 	protected final UiWindow window;
+	private final float defaultWidth;
+	private final float defaultHeight;
 
 	private final List<UiComponent> content = new ArrayList<>();
 	private final List<EditBox> contentInputs = new ArrayList<>();
@@ -58,7 +60,9 @@ public abstract class ChaosScreen extends Screen {
 	protected ChaosScreen(Screen parent, Component title, String windowKey, float defaultWidth, float defaultHeight) {
 		super(title);
 		this.parent = parent;
-		this.window = new UiWindow(windowKey, defaultWidth, defaultHeight);
+		this.window = new UiWindow(windowKey);
+		this.defaultWidth = defaultWidth;
+		this.defaultHeight = defaultHeight;
 	}
 
 	// -------------------------------------------------------------- lifecycle
@@ -77,7 +81,7 @@ public abstract class ChaosScreen extends Screen {
 		closeDelivered = false;
 		appear.snap(0.0F);
 		exit.snap(0.0F);
-		window.open(this.width, this.height);
+		window.open(this.width, this.height, defaultWidth, defaultHeight);
 		layoutX = window.x();
 		layoutY = window.y();
 		offsetX = 0.0F;
@@ -691,7 +695,6 @@ public abstract class ChaosScreen extends Screen {
 		}
 	}
 
-	@Override
 	public void openHudEditor() {
 		if (this.minecraft != null) {
 			this.minecraft.setScreen(new HudEditorScreen(this));

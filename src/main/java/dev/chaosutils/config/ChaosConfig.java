@@ -90,8 +90,13 @@ public final class ChaosConfig {
 		}
 	}
 
-	/** Stores a value; the 5-second autosave writes it to disk. */
+	/** Stores a value; the 5-second autosave writes it to disk. A {@code null} removes the key. */
 	public static void setUi(String key, Object value) {
+		if (value == null) {
+			UI_STATE.remove(key);
+			markDirty();
+			return;
+		}
 		if (value instanceof Number number) {
 			UI_STATE.addProperty(key, number);
 		} else if (value instanceof Boolean flag) {
