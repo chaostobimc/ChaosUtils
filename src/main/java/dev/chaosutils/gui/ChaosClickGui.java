@@ -205,19 +205,22 @@ public final class ChaosClickGui extends ChaosScreen {
 		String version = modVersion();
 		Render.text(graphics, this.font, version, window.x() + 20.0F + this.font.width("ChaosUtils"),
 				window.y() + 14.0F, Render.alpha(theme.textFaint, alpha * 0.9F), false);
-		// Window controls: re-centre and close.
-		String hint = "drag to move  ·  double-click to re-centre";
-		Render.text(graphics, this.font, hint, window.right() - 46.0F - this.font.width(hint), window.y() + 14.0F,
-				Render.alpha(theme.textFaint, alpha * 0.7F), false);
+		// Window controls: the key hint next to the close button.
+		String hint = "press " + chaosKeyName() + " again or Esc to close  ·  drag to move";
+		Render.text(graphics, this.font, hint, window.right() - 44.0F - this.font.width(hint), window.y() + 14.0F,
+				Render.alpha(theme.textFaint, alpha * 0.75F), false);
 	}
 
 	private static String modVersion() {
+		return "build " + ChaosUtils.BUILD_TAG;
+	}
+
+	/** Name of the key that opens this interface, for the header hint. */
+	private static String chaosKeyName() {
 		try {
-			return net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer(ChaosUtils.MOD_ID)
-					.map(container -> "beta " + container.getMetadata().getVersion().getFriendlyString())
-					.orElse("beta");
+			return dev.chaosutils.core.Keybinds.openGui.getTranslatedKeyMessage().getString();
 		} catch (Throwable ignored) {
-			return "beta";
+			return "the interface key";
 		}
 	}
 
@@ -230,7 +233,7 @@ public final class ChaosClickGui extends ChaosScreen {
 		UiTheme theme = theme();
 		float y = window.bottom() - 14.0F;
 		String status = cards.size() + (cards.size() == 1 ? " module" : " modules") + " shown   ·   "
-				+ ModuleManager.countEnabled() + "/" + ModuleManager.modules().size() + " active"
+				+ ModuleManager.countEnabled() + "/" + ModuleManager.modules().size() + " active   ·   Esc closes"
 				+ (ChaosUtils.overlaysHidden() ? "   ·   overlays hidden" : "");
 		Render.text(graphics, this.font, status, window.x() + sidebarWidth + 24.0F, y,
 				Render.alpha(theme.textFaint, alpha * 0.85F), false);
@@ -310,7 +313,7 @@ public final class ChaosClickGui extends ChaosScreen {
 		public void update(float deltaSeconds, float mouseX, float mouseY) {
 			super.update(deltaSeconds, mouseX, mouseY);
 			selectedAnim.set(gui.selected == category && gui.query.isBlank() ? 1.0F : 0.0F);
-			selectedAnim.update(UiTheme.get().speed(16.0F));
+			selectedAnim.update(deltaSeconds, UiTheme.get().speed(16.0F));
 		}
 
 		@Override
@@ -460,12 +463,12 @@ public final class ChaosClickGui extends ChaosScreen {
 				expandedBefore = true;
 			}
 			expand.set(expanded ? 1.0F : 0.0F);
-			expand.update(UiTheme.get().speed(14.0F));
+			expand.update(deltaSeconds, UiTheme.get().speed(14.0F));
 			float extra = expandedBefore ? rowsHeight() * Anim.easeOutQuint(expand.get()) : 0.0F;
 			height = headerHeight() + extra;
 			super.update(deltaSeconds, mouseX, mouseY);
 			switchHover.set(isOverSwitch(mouseX, mouseY) ? 1.0F : 0.0F);
-			switchHover.update(UiTheme.get().speed(16.0F));
+			switchHover.update(deltaSeconds, UiTheme.get().speed(16.0F));
 			float rowY = headerHeight() + 6.0F;
 			for (UiComponent row : rows) {
 				row.setBounds(x + 12.0F, y + rowY, width - 24.0F, row.height());

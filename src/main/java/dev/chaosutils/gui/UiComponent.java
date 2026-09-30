@@ -150,12 +150,12 @@ public abstract class UiComponent {
 			appearDelay = Math.max(0.0F, appearDelay - deltaSeconds);
 		}
 		appear.set(appearDelay > 0.0F ? 0.0F : 1.0F);
-		appear.update(UiTheme.get().speed(9.0F));
+		appear.update(deltaSeconds, UiTheme.get().speed(9.0F));
 		float hovering = enabled && visible && contains(mouseX, mouseY) ? 1.0F : 0.0F;
 		hover.set(hovering);
-		hover.update(UiTheme.get().speed(16.0F));
-		active.update(UiTheme.get().speed(12.0F));
-		focus.update(UiTheme.get().speed(11.0F));
+		hover.update(deltaSeconds, UiTheme.get().speed(16.0F));
+		active.update(deltaSeconds, UiTheme.get().speed(12.0F));
+		focus.update(deltaSeconds, UiTheme.get().speed(11.0F));
 		for (UiComponent child : children) {
 			child.setLayerAlpha(layerAlpha);
 			child.update(deltaSeconds, mouseX, mouseY);

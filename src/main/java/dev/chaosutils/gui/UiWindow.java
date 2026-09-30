@@ -39,6 +39,7 @@ public final class UiWindow {
 
 	private final Anim.Value appear = new Anim.Value(0.0F, 9.0F);
 	private final Anim.Value close = new Anim.Value(0.0F, 13.0F);
+	private final Anim.Value closeHover = new Anim.Value(0.0F, 16.0F);
 	private boolean closing;
 
 	public UiWindow(String key) {
@@ -88,12 +89,45 @@ public final class UiWindow {
 		return closing && Anim.clamp01(close.get()) > 0.98F;
 	}
 
-	public void update(float deltaSeconds) {
+	/** Advances the shell animations. The pointer drives the close button highlight. */
+	public void update(float deltaSeconds, float mouseX, float mouseY) {
 		appear.set(1.0F);
-		appear.update(UiTheme.get().speed(9.0F));
+		appear.update(deltaSeconds, UiTheme.get().speed(9.0F));
+		closeHover.set(!closing && isOverCloseButton(mouseX, mouseY) ? 1.0F : 0.0F);
+		closeHover.update(deltaSeconds, UiTheme.get().speed(16.0F));
 		if (closing) {
-			close.update(UiTheme.get().speed(13.0F));
+			close.update(deltaSeconds, UiTheme.get().speed(13.0F));
 		}
+	}
+
+	/** Hit box of the title bar close button. */
+	public boolean isOverCloseButton(float mouseX, float mouseY) {
+		float size = 22.0F;
+		float left = right() - size - 12.0F;
+		float top = y + (TITLE_HEIGHT - size) * 0.5F;
+		return mouseX >= left && mouseX <= left + size && mouseY >= top && mouseY <= top + size;
+	}
+
+	public float closeHover() {
+		return closeHover.get();
+	}
+
+	/** Round close button with an animated hover state; drawn above the header. */
+	public void renderCloseButton(GuiGraphics graphics, UiTheme theme, float alpha) {
+		if (alpha <= 0.01F) {
+			return;
+		}
+		float size = 22.0F;
+		float left = right() - size - 12.0F;
+		float top = y + (TITLE_HEIGHT - size) * 0.5F + slide();
+		float hover = closeHover.get();
+		Render.circle(graphics, left + size * 0.5F, top + size * 0.5F, size * 0.5F,
+				Render.alpha(theme.negative, (0.10F + 0.35F * hover) * alpha));
+		int color = Render.mix(theme.textDim, theme.negative, hover);
+		Render.line(graphics, left + 7.0F, top + 7.0F, left + size - 7.0F, top + size - 7.0F, 1.6F,
+				Render.alpha(color, alpha));
+		Render.line(graphics, left + size - 7.0F, top + 7.0F, left + 7.0F, top + size - 7.0F, 1.6F,
+				Render.alpha(color, alpha));
 	}
 
 	public void center(int screenWidth, int screenHeight) {

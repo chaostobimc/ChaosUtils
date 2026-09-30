@@ -91,17 +91,19 @@ public final class UiTheme {
 		sidebarTop = Render.alpha(Render.mix(shell, 0x00000000, 0.35F), 0.92F);
 		sidebarBottom = Render.alpha(Render.mix(shell, accent, 0.05F), 0.92F);
 
-		surface = 0xC8181826;
-		surfaceHover = 0xE0202032;
-		card = 0x9C1A1A27;
-		cardHover = 0xD8222233;
+		// Surfaces are deliberately solid: nothing in the interface is supposed to look like the
+		// world is shining through it, which is what made the panels hard to read.
+		surface = 0xEC15151F;
+		surfaceHover = 0xF61D1D2A;
+		card = 0xF01A1A27;
+		cardHover = 0xFA232336;
 		cardActive = Render.alpha(Render.mix(0xFF22223A, accent, 0.22F), 1.0F);
-		track = 0x662F2F45;
-		trackHover = 0x883A3A55;
+		track = 0x992F2F45;
+		trackHover = 0xBB3A3A55;
 
-		outline = 0x1AFFFFFF;
-		outlineSoft = 0x12FFFFFF;
-		outlineStrong = 0x33FFFFFF;
+		outline = 0x2AFFFFFF;
+		outlineSoft = 0x22FFFFFF;
+		outlineStrong = 0x4DFFFFFF;
 
 		text = 0xFFF4F5FA;
 		textDim = 0xFFA8AABF;

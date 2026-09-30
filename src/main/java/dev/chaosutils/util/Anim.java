@@ -179,5 +179,17 @@ public final class Anim {
 			current = approach(current, target, speed, deltaSeconds);
 			return current;
 		}
+
+		/**
+		 * Advances the value with an explicit rate in "gap closed per second".
+		 *
+		 * <p>Use this when the rate comes from the theme (see {@code UiTheme#speed}): the value's
+		 * own speed is only a fallback, and passing the rate as {@code deltaSeconds} would make
+		 * every animation finish within a single frame.
+		 */
+		public float update(float deltaSeconds, float rate) {
+			current = approach(current, target, rate, deltaSeconds);
+			return current;
+		}
 	}
 }

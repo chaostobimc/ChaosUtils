@@ -138,9 +138,9 @@ public final class RadialMenuScreen extends Screen {
 		}
 
 		appear.set(1.0F);
-		appear.update(UiThemeSpeed(12.0F));
+		appear.update(frameDelta, UiThemeSpeed(12.0F));
 		if (closing) {
-			exit.update(UiThemeSpeed(9.0F));
+			exit.update(frameDelta, UiThemeSpeed(9.0F));
 			closingFor += frameDelta;
 			if (closingFor > CLOSE_DELAY) {
 				closeFinished = true;

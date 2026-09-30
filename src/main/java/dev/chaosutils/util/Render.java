@@ -25,8 +25,21 @@ public final class Render {
 		return (a & 0xFF) << 24 | (r & 0xFF) << 16 | (g & 0xFF) << 8 | (b & 0xFF);
 	}
 
+	/**
+	 * Draws {@code color} with the given alpha.
+	 *
+	 * <p>Colours written without an alpha byte ({@code 0xRRGGBB}, and {@code 0x000000}) count as
+	 * fully opaque, exactly like they read. This matters: {@code 0x12131C} has an alpha byte of
+	 * zero, so multiplying would make every dark surface - panel fills, the modal dim, the radial
+	 * hub - completely invisible. Colours that do carry an alpha byte keep it and the value scales
+	 * it, which is what all the translucent theme tokens rely on.
+	 */
 	public static int alpha(int color, float alpha) {
-		int a = Math.round(Anim.clamp01(alpha) * ((color >>> 24) & 0xFF));
+		int base = (color >>> 24) & 0xFF;
+		if (base == 0) {
+			base = 0xFF;
+		}
+		int a = Math.round(Anim.clamp01(alpha) * base);
 		return (color & 0xFFFFFF) | a << 24;
 	}
 

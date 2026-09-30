@@ -74,9 +74,9 @@ public final class UiModals {
 		@Override
 		public void update(float deltaSeconds, float mouseX, float mouseY) {
 			presence.set(1.0F);
-			presence.update(UiTheme.get().speed(11.0F));
+			presence.update(deltaSeconds, UiTheme.get().speed(11.0F));
 			if (closing) {
-				exit.update(UiTheme.get().speed(14.0F));
+				exit.update(deltaSeconds, UiTheme.get().speed(14.0F));
 				if (exit.get() > 0.985F && !done) {
 					done = true;
 					if (onClosed != null) {

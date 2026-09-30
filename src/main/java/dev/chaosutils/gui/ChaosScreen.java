@@ -45,6 +45,7 @@ public abstract class ChaosScreen extends Screen {
 	private final Anim.Value exit = new Anim.Value(0.0F, 14.0F);
 	private boolean closing;
 	private boolean closeDelivered;
+	private long closeRequestedAt;
 	private long lastFrameNanos;
 	protected float deltaSeconds;
 	private float mouseX;
@@ -86,7 +87,7 @@ public abstract class ChaosScreen extends Screen {
 		layoutY = window.y();
 		offsetX = 0.0F;
 		offsetY = 0.0F;
-		buildLayout();
+		buildLayoutSafely();
 	}
 
 	@Override
@@ -103,6 +104,7 @@ public abstract class ChaosScreen extends Screen {
 	public void requestClose() {
 		if (!closing) {
 			closing = true;
+			closeRequestedAt = System.nanoTime();
 			exit.set(1.0F);
 			for (UiModals.Modal modal : modals) {
 				modal.close();
@@ -130,7 +132,13 @@ public abstract class ChaosScreen extends Screen {
 	@Override
 	public void tick() {
 		super.tick();
-		if (window.isGone() && closing && !closeDelivered) {
+		if (!closing || closeDelivered) {
+			return;
+		}
+		// Normally the exit animation decides; the time limit is the guarantee that the player can
+		// always leave the screen, whatever happens to the animation.
+		boolean timedOut = System.nanoTime() - closeRequestedAt > CLOSE_TIMEOUT_NANOS;
+		if (window.isGone() || timedOut) {
 			closeDelivered = true;
 			onClosed();
 			if (this.minecraft != null) {
@@ -138,6 +146,9 @@ public abstract class ChaosScreen extends Screen {
 			}
 		}
 	}
+
+	/** Hard limit for the closing animation, in nanoseconds. */
+	private static final long CLOSE_TIMEOUT_NANOS = 500_000_000L;
 
 	// -------------------------------------------------------------- accessors
 
@@ -198,6 +209,26 @@ public abstract class ChaosScreen extends Screen {
 		return content;
 	}
 
+	/**
+	 * Builds the layout and turns a failure into a visible message instead of an empty window.
+	 *
+	 * <p>A screen whose {@code buildLayout} throws would otherwise render nothing but its frame -
+	 * which is impossible to tell apart from "the interface is broken", so the error is logged and
+	 * shown.
+	 */
+	private void buildLayoutSafely() {
+		try {
+			buildLayout();
+		} catch (Throwable throwable) {
+			dev.chaosutils.ChaosUtils.LOGGER.error("ChaosUtils: layout of {} failed",
+					getClass().getSimpleName(), throwable);
+			content.clear();
+			UiWidgets.Label error = new UiWidgets.Label("Layout error - see latest.log", theme().negative);
+			error.setBounds(24.0F, window.y() + window.titleHeight() + 24.0F, 320.0F, 14.0F);
+			content.add(error);
+		}
+	}
+
 	/** Rebuilds the layout while keeping the window position and size. */
 	protected void refresh() {
 		content.clear();
@@ -205,7 +236,7 @@ public abstract class ChaosScreen extends Screen {
 		layoutY = window.y();
 		offsetX = 0.0F;
 		offsetY = 0.0F;
-		buildLayout();
+		buildLayoutSafely();
 		for (UiComponent component : content) {
 			component.snapAppear();
 		}
@@ -354,16 +385,16 @@ public abstract class ChaosScreen extends Screen {
 		this.mouseY = mouseY;
 
 		appear.set(1.0F);
-		appear.update(theme().speed(10.0F));
+		appear.update(deltaSeconds, theme().speed(10.0F));
 		if (closing) {
-			exit.update(theme().speed(14.0F));
+			exit.update(deltaSeconds, theme().speed(14.0F));
 		}
 		tickAnimations();
 
 		Backdrop.render(graphics, this, theme());
 
 		// ------- window and content
-		window.update(deltaSeconds);
+		window.update(deltaSeconds, mouseX, mouseY);
 		offsetX = window.x() - layoutX;
 		offsetY = window.y() - layoutY;
 		float windowAlpha = alpha();
@@ -371,6 +402,7 @@ public abstract class ChaosScreen extends Screen {
 		float contentAlpha = windowAlpha * (modalOpen ? 0.35F : 1.0F);
 		window.renderShell(graphics, theme());
 		renderHeader(graphics, windowAlpha);
+		window.renderCloseButton(graphics, theme(), windowAlpha);
 
 		Render.scissor(graphics, layoutBodyX() + offsetX, layoutBodyY() + offsetY, window.bodyWidth(), window.bodyHeight());
 		graphics.pose().pushMatrix();
@@ -557,6 +589,11 @@ public abstract class ChaosScreen extends Screen {
 				return true;
 			}
 		}
+		if (window.isOverCloseButton(clickX, clickY)) {
+			playClick(false);
+			requestClose();
+			return true;
+		}
 		if (window.mouseClicked(clickX, clickY, button)) {
 			return true;
 		}
@@ -728,9 +765,9 @@ public abstract class ChaosScreen extends Screen {
 		private void update(float deltaSeconds) {
 			age += deltaSeconds;
 			slide.set(1.0F);
-			slide.update(UiTheme.get().speed(13.0F));
+			slide.update(deltaSeconds, UiTheme.get().speed(13.0F));
 			life.set(age > 3.0F ? 0.0F : 1.0F);
-			life.update(age > 3.0F ? UiTheme.get().speed(6.0F) : 60.0F);
+			life.update(deltaSeconds, age > 3.0F ? UiTheme.get().speed(6.0F) : 60.0F);
 		}
 
 		private boolean expired() {

@@ -337,7 +337,7 @@ public final class ChaosScreens {
 			public void update(float deltaSeconds, float mouseX, float mouseY) {
 				super.update(deltaSeconds, mouseX, mouseY);
 				spin.set(spin.target() + deltaSeconds * 4.0F);
-				spin.update(UiTheme.get().speed(0.6F));
+				spin.update(deltaSeconds, UiTheme.get().speed(0.6F));
 			}
 
 			@Override

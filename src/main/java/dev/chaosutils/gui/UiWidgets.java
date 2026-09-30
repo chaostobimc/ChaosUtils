@@ -256,7 +256,7 @@ public final class UiWidgets {
 				on.snap(value ? 1.0F : 0.0F);
 				snapped = true;
 			}
-			on.update(UiTheme.get().speed(16.0F));
+			on.update(deltaSeconds, UiTheme.get().speed(16.0F));
 		}
 
 		private float switchX() {
@@ -457,8 +457,8 @@ public final class UiWidgets {
 					indicatorWidth.snap(bounds[1]);
 					snapped = true;
 				}
-				indicatorX.update(UiTheme.get().speed(18.0F));
-				indicatorWidth.update(UiTheme.get().speed(18.0F));
+				indicatorX.update(deltaSeconds, UiTheme.get().speed(18.0F));
+				indicatorWidth.update(deltaSeconds, UiTheme.get().speed(18.0F));
 			}
 		}
 
@@ -951,7 +951,7 @@ public final class UiWidgets {
 			float before = scroll;
 			scroll = Anim.approach(scroll, targetScroll, UiTheme.get().speed(13.0F), deltaSeconds);
 			barOpacity.set(Math.abs(scroll - before) > 0.4F || isHovered(mouseX, mouseY) ? 1.0F : 0.0F);
-			barOpacity.update(UiTheme.get().speed(4.0F));
+			barOpacity.update(deltaSeconds, UiTheme.get().speed(4.0F));
 			for (int i = 0; i < items.size(); i++) {
 				UiComponent item = items.get(i);
 				float base = i < baseY.size() ? baseY.get(i) : 0.0F;
@@ -1095,7 +1095,7 @@ public final class UiWidgets {
 			UiTheme theme = UiTheme.get();
 			float focusAmount = box.isFocused() ? 1.0F : 0.0F;
 			focus.set(focusAmount);
-			focus.update(UiTheme.get().speed(14.0F));
+			focus.update(deltaSeconds, UiTheme.get().speed(14.0F));
 			float focusValue = focus.get();
 			float radius = Math.min(theme.radiusControl + 2.0F, height * 0.5F);
 			Render.roundedRect(graphics, x, y, width, height, radius,

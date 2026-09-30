@@ -7,6 +7,7 @@ import dev.chaosutils.config.Category;
 import dev.chaosutils.config.ChaosConfig;
 import dev.chaosutils.core.ApiCompat;
 import dev.chaosutils.core.Keybinds;
+import dev.chaosutils.util.InputUtil;
 import dev.chaosutils.core.TpsEstimator;
 import dev.chaosutils.feature.FeatureRegistry;
 import dev.chaosutils.feature.Features;
@@ -26,11 +27,15 @@ import org.slf4j.LoggerFactory;
  */
 public final class ChaosUtils implements ClientModInitializer {
 	public static final String MOD_ID = "chaosutils";
+	/** Shown in the GUI header and logged on startup, so the running build is identifiable. */
+	public static final String BUILD_TAG = "ui-3";
 	public static final Logger LOGGER = LoggerFactory.getLogger("ChaosUtils");
 
 	private static final Set<Category> HIDDEN_CATEGORIES = EnumSet.noneOf(Category.class);
 	private static boolean overlaysHidden;
 	private static boolean wasInWorld;
+	/** Edge detection for the interface key; polled physically so it also fires inside a screen. */
+	private static boolean wasGuiKeyDown;
 
 	@Override
 	public void onInitializeClient() {
@@ -48,8 +53,8 @@ public final class ChaosUtils implements ClientModInitializer {
 		} catch (Throwable ignored) {
 			// sandboxed environments may refuse; the periodic autosave covers us
 		}
-		LOGGER.info("ChaosUtils ready: {} modules, {} integration hooks",
-				dev.chaosutils.config.ModuleManager.modules().size(), 9);
+		LOGGER.info("ChaosUtils ready: build {}, {} modules, 9 integration hooks", BUILD_TAG,
+				dev.chaosutils.config.ModuleManager.modules().size());
 	}
 
 	private void onEndTick(Minecraft client) {
@@ -65,9 +70,7 @@ public final class ChaosUtils implements ClientModInitializer {
 		}
 		ChaosConfig.tick();
 		Features.tick(client);
-		if (Keybinds.openGui != null && Keybinds.openGui.consumeClick()) {
-			client.setScreen(new dev.chaosutils.gui.ChaosClickGui());
-		}
+		handleInterfaceKey(client);
 		if (Keybinds.panicToggle != null && Keybinds.panicToggle.consumeClick()) {
 			toggleOverlays();
 			if (client.player != null) {
@@ -75,6 +78,36 @@ public final class ChaosUtils implements ClientModInitializer {
 						net.minecraft.network.chat.Component.literal(overlaysHidden
 								? "§b[ChaosUtils] §fOverlays hidden" : "§b[ChaosUtils] §fOverlays visible"), true);
 			}
+		}
+	}
+
+	/**
+	 * Opens and closes the interface with the same key.
+	 *
+	 * <p>The key state is polled physically ({@link InputUtil#isPhysicallyDown}): as soon as a screen
+	 * is open the game releases every key mapping and stops feeding new states to them, so
+	 * {@code KeyMapping#isDown()} - and therefore {@code consumeClick()} - can never report the key
+	 * while the interface is up. That is also why the same key closes the interface again instead of
+	 * leaving the player stuck in it.
+	 */
+	private static void handleInterfaceKey(Minecraft client) {
+		if (Keybinds.openGui == null) {
+			return;
+		}
+		boolean down = InputUtil.isPhysicallyDown(Keybinds.openGui);
+		boolean justPressed = down && !wasGuiKeyDown;
+		wasGuiKeyDown = down;
+		if (!justPressed) {
+			return;
+		}
+		if (client.screen instanceof dev.chaosutils.gui.ChaosScreen open) {
+			LOGGER.info("ChaosUtils: closing {} again (key pressed)", open.getClass().getSimpleName());
+			open.requestClose();
+			return;
+		}
+		if (client.screen == null) {
+			LOGGER.info("ChaosUtils: opening the click GUI (build {})", BUILD_TAG);
+			client.setScreen(new dev.chaosutils.gui.ChaosClickGui());
 		}
 	}
 

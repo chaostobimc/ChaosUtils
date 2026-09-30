@@ -290,6 +290,7 @@ import dev.chaosutils.config.Category;
 import dev.chaosutils.config.ChaosConfig;
 import dev.chaosutils.core.ApiCompat;
 import dev.chaosutils.core.Keybinds;
+import dev.chaosutils.util.InputUtil;
 import dev.chaosutils.core.TpsEstimator;
 import dev.chaosutils.feature.FeatureRegistry;
 import dev.chaosutils.feature.Features;
@@ -309,11 +310,15 @@ import org.slf4j.LoggerFactory;
  */
 public final class ChaosUtils implements ClientModInitializer {
 	public static final String MOD_ID = "chaosutils";
+	/** Shown in the GUI header and logged on startup, so the running build is identifiable. */
+	public static final String BUILD_TAG = "ui-3";
 	public static final Logger LOGGER = LoggerFactory.getLogger("ChaosUtils");
 
 	private static final Set<Category> HIDDEN_CATEGORIES = EnumSet.noneOf(Category.class);
 	private static boolean overlaysHidden;
 	private static boolean wasInWorld;
+	/** Edge detection for the interface key; polled physically so it also fires inside a screen. */
+	private static boolean wasGuiKeyDown;
 
 	@Override
 	public void onInitializeClient() {
@@ -331,8 +336,8 @@ public final class ChaosUtils implements ClientModInitializer {
 		} catch (Throwable ignored) {
 			// sandboxed environments may refuse; the periodic autosave covers us
 		}
-		LOGGER.info("ChaosUtils ready: {} modules, {} integration hooks",
-				dev.chaosutils.config.ModuleManager.modules().size(), 9);
+		LOGGER.info("ChaosUtils ready: build {}, {} modules, 9 integration hooks", BUILD_TAG,
+				dev.chaosutils.config.ModuleManager.modules().size());
 	}
 
 	private void onEndTick(Minecraft client) {
@@ -348,9 +353,7 @@ public final class ChaosUtils implements ClientModInitializer {
 		}
 		ChaosConfig.tick();
 		Features.tick(client);
-		if (Keybinds.openGui != null && Keybinds.openGui.consumeClick()) {
-			client.setScreen(new dev.chaosutils.gui.ChaosClickGui());
-		}
+		handleInterfaceKey(client);
 		if (Keybinds.panicToggle != null && Keybinds.panicToggle.consumeClick()) {
 			toggleOverlays();
 			if (client.player != null) {
@@ -358,6 +361,36 @@ public final class ChaosUtils implements ClientModInitializer {
 						net.minecraft.network.chat.Component.literal(overlaysHidden
 								? "§b[ChaosUtils] §fOverlays hidden" : "§b[ChaosUtils] §fOverlays visible"), true);
 			}
+		}
+	}
+
+	/**
+	 * Opens and closes the interface with the same key.
+	 *
+	 * <p>The key state is polled physically ({@link InputUtil#isPhysicallyDown}): as soon as a screen
+	 * is open the game releases every key mapping and stops feeding new states to them, so
+	 * {@code KeyMapping#isDown()} - and therefore {@code consumeClick()} - can never report the key
+	 * while the interface is up. That is also why the same key closes the interface again instead of
+	 * leaving the player stuck in it.
+	 */
+	private static void handleInterfaceKey(Minecraft client) {
+		if (Keybinds.openGui == null) {
+			return;
+		}
+		boolean down = InputUtil.isPhysicallyDown(Keybinds.openGui);
+		boolean justPressed = down && !wasGuiKeyDown;
+		wasGuiKeyDown = down;
+		if (!justPressed) {
+			return;
+		}
+		if (client.screen instanceof dev.chaosutils.gui.ChaosScreen open) {
+			LOGGER.info("ChaosUtils: closing {} again (key pressed)", open.getClass().getSimpleName());
+			open.requestClose();
+			return;
+		}
+		if (client.screen == null) {
+			LOGGER.info("ChaosUtils: opening the click GUI (build {})", BUILD_TAG);
+			client.setScreen(new dev.chaosutils.gui.ChaosClickGui());
 		}
 	}
 
@@ -2320,6 +2353,18 @@ public final class Anim {
 			current = approach(current, target, speed, deltaSeconds);
 			return current;
 		}
+
+		/**
+		 * Advances the value with an explicit rate in "gap closed per second".
+		 *
+		 * <p>Use this when the rate comes from the theme (see {@code UiTheme#speed}): the value's
+		 * own speed is only a fallback, and passing the rate as {@code deltaSeconds} would make
+		 * every animation finish within a single frame.
+		 */
+		public float update(float deltaSeconds, float rate) {
+			current = approach(current, target, rate, deltaSeconds);
+			return current;
+		}
 	}
 }
 ```
@@ -2986,8 +3031,21 @@ public final class Render {
 		return (a & 0xFF) << 24 | (r & 0xFF) << 16 | (g & 0xFF) << 8 | (b & 0xFF);
 	}
 
+	/**
+	 * Draws {@code color} with the given alpha.
+	 *
+	 * <p>Colours written without an alpha byte ({@code 0xRRGGBB}, and {@code 0x000000}) count as
+	 * fully opaque, exactly like they read. This matters: {@code 0x12131C} has an alpha byte of
+	 * zero, so multiplying would make every dark surface - panel fills, the modal dim, the radial
+	 * hub - completely invisible. Colours that do carry an alpha byte keep it and the value scales
+	 * it, which is what all the translucent theme tokens rely on.
+	 */
 	public static int alpha(int color, float alpha) {
-		int a = Math.round(Anim.clamp01(alpha) * ((color >>> 24) & 0xFF));
+		int base = (color >>> 24) & 0xFF;
+		if (base == 0) {
+			base = 0xFF;
+		}
+		int a = Math.round(Anim.clamp01(alpha) * base);
 		return (color & 0xFFFFFF) | a << 24;
 	}
 
@@ -4512,9 +4570,9 @@ public final class RadialMenuScreen extends Screen {
 		}
 
 		appear.set(1.0F);
-		appear.update(UiThemeSpeed(12.0F));
+		appear.update(frameDelta, UiThemeSpeed(12.0F));
 		if (closing) {
-			exit.update(UiThemeSpeed(9.0F));
+			exit.update(frameDelta, UiThemeSpeed(9.0F));
 			closingFor += frameDelta;
 			if (closingFor > CLOSE_DELAY) {
 				closeFinished = true;
@@ -5113,19 +5171,22 @@ public final class ChaosClickGui extends ChaosScreen {
 		String version = modVersion();
 		Render.text(graphics, this.font, version, window.x() + 20.0F + this.font.width("ChaosUtils"),
 				window.y() + 14.0F, Render.alpha(theme.textFaint, alpha * 0.9F), false);
-		// Window controls: re-centre and close.
-		String hint = "drag to move  ·  double-click to re-centre";
-		Render.text(graphics, this.font, hint, window.right() - 46.0F - this.font.width(hint), window.y() + 14.0F,
-				Render.alpha(theme.textFaint, alpha * 0.7F), false);
+		// Window controls: the key hint next to the close button.
+		String hint = "press " + chaosKeyName() + " again or Esc to close  ·  drag to move";
+		Render.text(graphics, this.font, hint, window.right() - 44.0F - this.font.width(hint), window.y() + 14.0F,
+				Render.alpha(theme.textFaint, alpha * 0.75F), false);
 	}
 
 	private static String modVersion() {
+		return "build " + ChaosUtils.BUILD_TAG;
+	}
+
+	/** Name of the key that opens this interface, for the header hint. */
+	private static String chaosKeyName() {
 		try {
-			return net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer(ChaosUtils.MOD_ID)
-					.map(container -> "beta " + container.getMetadata().getVersion().getFriendlyString())
-					.orElse("beta");
+			return dev.chaosutils.core.Keybinds.openGui.getTranslatedKeyMessage().getString();
 		} catch (Throwable ignored) {
-			return "beta";
+			return "the interface key";
 		}
 	}
 
@@ -5138,7 +5199,7 @@ public final class ChaosClickGui extends ChaosScreen {
 		UiTheme theme = theme();
 		float y = window.bottom() - 14.0F;
 		String status = cards.size() + (cards.size() == 1 ? " module" : " modules") + " shown   ·   "
-				+ ModuleManager.countEnabled() + "/" + ModuleManager.modules().size() + " active"
+				+ ModuleManager.countEnabled() + "/" + ModuleManager.modules().size() + " active   ·   Esc closes"
 				+ (ChaosUtils.overlaysHidden() ? "   ·   overlays hidden" : "");
 		Render.text(graphics, this.font, status, window.x() + sidebarWidth + 24.0F, y,
 				Render.alpha(theme.textFaint, alpha * 0.85F), false);
@@ -5218,7 +5279,7 @@ public final class ChaosClickGui extends ChaosScreen {
 		public void update(float deltaSeconds, float mouseX, float mouseY) {
 			super.update(deltaSeconds, mouseX, mouseY);
 			selectedAnim.set(gui.selected == category && gui.query.isBlank() ? 1.0F : 0.0F);
-			selectedAnim.update(UiTheme.get().speed(16.0F));
+			selectedAnim.update(deltaSeconds, UiTheme.get().speed(16.0F));
 		}
 
 		@Override
@@ -5368,12 +5429,12 @@ public final class ChaosClickGui extends ChaosScreen {
 				expandedBefore = true;
 			}
 			expand.set(expanded ? 1.0F : 0.0F);
-			expand.update(UiTheme.get().speed(14.0F));
+			expand.update(deltaSeconds, UiTheme.get().speed(14.0F));
 			float extra = expandedBefore ? rowsHeight() * Anim.easeOutQuint(expand.get()) : 0.0F;
 			height = headerHeight() + extra;
 			super.update(deltaSeconds, mouseX, mouseY);
 			switchHover.set(isOverSwitch(mouseX, mouseY) ? 1.0F : 0.0F);
-			switchHover.update(UiTheme.get().speed(16.0F));
+			switchHover.update(deltaSeconds, UiTheme.get().speed(16.0F));
 			float rowY = headerHeight() + 6.0F;
 			for (UiComponent row : rows) {
 				row.setBounds(x + 12.0F, y + rowY, width - 24.0F, row.height());
@@ -5622,6 +5683,7 @@ public abstract class ChaosScreen extends Screen {
 	private final Anim.Value exit = new Anim.Value(0.0F, 14.0F);
 	private boolean closing;
 	private boolean closeDelivered;
+	private long closeRequestedAt;
 	private long lastFrameNanos;
 	protected float deltaSeconds;
 	private float mouseX;
@@ -5663,7 +5725,7 @@ public abstract class ChaosScreen extends Screen {
 		layoutY = window.y();
 		offsetX = 0.0F;
 		offsetY = 0.0F;
-		buildLayout();
+		buildLayoutSafely();
 	}
 
 	@Override
@@ -5680,6 +5742,7 @@ public abstract class ChaosScreen extends Screen {
 	public void requestClose() {
 		if (!closing) {
 			closing = true;
+			closeRequestedAt = System.nanoTime();
 			exit.set(1.0F);
 			for (UiModals.Modal modal : modals) {
 				modal.close();
@@ -5707,7 +5770,13 @@ public abstract class ChaosScreen extends Screen {
 	@Override
 	public void tick() {
 		super.tick();
-		if (window.isGone() && closing && !closeDelivered) {
+		if (!closing || closeDelivered) {
+			return;
+		}
+		// Normally the exit animation decides; the time limit is the guarantee that the player can
+		// always leave the screen, whatever happens to the animation.
+		boolean timedOut = System.nanoTime() - closeRequestedAt > CLOSE_TIMEOUT_NANOS;
+		if (window.isGone() || timedOut) {
 			closeDelivered = true;
 			onClosed();
 			if (this.minecraft != null) {
@@ -5715,6 +5784,9 @@ public abstract class ChaosScreen extends Screen {
 			}
 		}
 	}
+
+	/** Hard limit for the closing animation, in nanoseconds. */
+	private static final long CLOSE_TIMEOUT_NANOS = 500_000_000L;
 
 	// -------------------------------------------------------------- accessors
 
@@ -5775,6 +5847,26 @@ public abstract class ChaosScreen extends Screen {
 		return content;
 	}
 
+	/**
+	 * Builds the layout and turns a failure into a visible message instead of an empty window.
+	 *
+	 * <p>A screen whose {@code buildLayout} throws would otherwise render nothing but its frame -
+	 * which is impossible to tell apart from "the interface is broken", so the error is logged and
+	 * shown.
+	 */
+	private void buildLayoutSafely() {
+		try {
+			buildLayout();
+		} catch (Throwable throwable) {
+			dev.chaosutils.ChaosUtils.LOGGER.error("ChaosUtils: layout of {} failed",
+					getClass().getSimpleName(), throwable);
+			content.clear();
+			UiWidgets.Label error = new UiWidgets.Label("Layout error - see latest.log", theme().negative);
+			error.setBounds(24.0F, window.y() + window.titleHeight() + 24.0F, 320.0F, 14.0F);
+			content.add(error);
+		}
+	}
+
 	/** Rebuilds the layout while keeping the window position and size. */
 	protected void refresh() {
 		content.clear();
@@ -5782,7 +5874,7 @@ public abstract class ChaosScreen extends Screen {
 		layoutY = window.y();
 		offsetX = 0.0F;
 		offsetY = 0.0F;
-		buildLayout();
+		buildLayoutSafely();
 		for (UiComponent component : content) {
 			component.snapAppear();
 		}
@@ -5931,16 +6023,16 @@ public abstract class ChaosScreen extends Screen {
 		this.mouseY = mouseY;
 
 		appear.set(1.0F);
-		appear.update(theme().speed(10.0F));
+		appear.update(deltaSeconds, theme().speed(10.0F));
 		if (closing) {
-			exit.update(theme().speed(14.0F));
+			exit.update(deltaSeconds, theme().speed(14.0F));
 		}
 		tickAnimations();
 
 		Backdrop.render(graphics, this, theme());
 
 		// ------- window and content
-		window.update(deltaSeconds);
+		window.update(deltaSeconds, mouseX, mouseY);
 		offsetX = window.x() - layoutX;
 		offsetY = window.y() - layoutY;
 		float windowAlpha = alpha();
@@ -5948,6 +6040,7 @@ public abstract class ChaosScreen extends Screen {
 		float contentAlpha = windowAlpha * (modalOpen ? 0.35F : 1.0F);
 		window.renderShell(graphics, theme());
 		renderHeader(graphics, windowAlpha);
+		window.renderCloseButton(graphics, theme(), windowAlpha);
 
 		Render.scissor(graphics, layoutBodyX() + offsetX, layoutBodyY() + offsetY, window.bodyWidth(), window.bodyHeight());
 		graphics.pose().pushMatrix();
@@ -6134,6 +6227,11 @@ public abstract class ChaosScreen extends Screen {
 				return true;
 			}
 		}
+		if (window.isOverCloseButton(clickX, clickY)) {
+			playClick(false);
+			requestClose();
+			return true;
+		}
 		if (window.mouseClicked(clickX, clickY, button)) {
 			return true;
 		}
@@ -6305,9 +6403,9 @@ public abstract class ChaosScreen extends Screen {
 		private void update(float deltaSeconds) {
 			age += deltaSeconds;
 			slide.set(1.0F);
-			slide.update(UiTheme.get().speed(13.0F));
+			slide.update(deltaSeconds, UiTheme.get().speed(13.0F));
 			life.set(age > 3.0F ? 0.0F : 1.0F);
-			life.update(age > 3.0F ? UiTheme.get().speed(6.0F) : 60.0F);
+			life.update(deltaSeconds, age > 3.0F ? UiTheme.get().speed(6.0F) : 60.0F);
 		}
 
 		private boolean expired() {
@@ -6677,7 +6775,7 @@ public final class ChaosScreens {
 			public void update(float deltaSeconds, float mouseX, float mouseY) {
 				super.update(deltaSeconds, mouseX, mouseY);
 				spin.set(spin.target() + deltaSeconds * 4.0F);
-				spin.update(UiTheme.get().speed(0.6F));
+				spin.update(deltaSeconds, UiTheme.get().speed(0.6F));
 			}
 
 			@Override
@@ -7785,12 +7883,12 @@ public abstract class UiComponent {
 			appearDelay = Math.max(0.0F, appearDelay - deltaSeconds);
 		}
 		appear.set(appearDelay > 0.0F ? 0.0F : 1.0F);
-		appear.update(UiTheme.get().speed(9.0F));
+		appear.update(deltaSeconds, UiTheme.get().speed(9.0F));
 		float hovering = enabled && visible && contains(mouseX, mouseY) ? 1.0F : 0.0F;
 		hover.set(hovering);
-		hover.update(UiTheme.get().speed(16.0F));
-		active.update(UiTheme.get().speed(12.0F));
-		focus.update(UiTheme.get().speed(11.0F));
+		hover.update(deltaSeconds, UiTheme.get().speed(16.0F));
+		active.update(deltaSeconds, UiTheme.get().speed(12.0F));
+		focus.update(deltaSeconds, UiTheme.get().speed(11.0F));
 		for (UiComponent child : children) {
 			child.setLayerAlpha(layerAlpha);
 			child.update(deltaSeconds, mouseX, mouseY);
@@ -7956,9 +8054,9 @@ public final class UiModals {
 		@Override
 		public void update(float deltaSeconds, float mouseX, float mouseY) {
 			presence.set(1.0F);
-			presence.update(UiTheme.get().speed(11.0F));
+			presence.update(deltaSeconds, UiTheme.get().speed(11.0F));
 			if (closing) {
-				exit.update(UiTheme.get().speed(14.0F));
+				exit.update(deltaSeconds, UiTheme.get().speed(14.0F));
 				if (exit.get() > 0.985F && !done) {
 					done = true;
 					if (onClosed != null) {
@@ -8641,17 +8739,19 @@ public final class UiTheme {
 		sidebarTop = Render.alpha(Render.mix(shell, 0x00000000, 0.35F), 0.92F);
 		sidebarBottom = Render.alpha(Render.mix(shell, accent, 0.05F), 0.92F);
 
-		surface = 0xC8181826;
-		surfaceHover = 0xE0202032;
-		card = 0x9C1A1A27;
-		cardHover = 0xD8222233;
+		// Surfaces are deliberately solid: nothing in the interface is supposed to look like the
+		// world is shining through it, which is what made the panels hard to read.
+		surface = 0xEC15151F;
+		surfaceHover = 0xF61D1D2A;
+		card = 0xF01A1A27;
+		cardHover = 0xFA232336;
 		cardActive = Render.alpha(Render.mix(0xFF22223A, accent, 0.22F), 1.0F);
-		track = 0x662F2F45;
-		trackHover = 0x883A3A55;
+		track = 0x992F2F45;
+		trackHover = 0xBB3A3A55;
 
-		outline = 0x1AFFFFFF;
-		outlineSoft = 0x12FFFFFF;
-		outlineStrong = 0x33FFFFFF;
+		outline = 0x2AFFFFFF;
+		outlineSoft = 0x22FFFFFF;
+		outlineStrong = 0x4DFFFFFF;
 
 		text = 0xFFF4F5FA;
 		textDim = 0xFFA8AABF;
@@ -8980,7 +9080,7 @@ public final class UiWidgets {
 				on.snap(value ? 1.0F : 0.0F);
 				snapped = true;
 			}
-			on.update(UiTheme.get().speed(16.0F));
+			on.update(deltaSeconds, UiTheme.get().speed(16.0F));
 		}
 
 		private float switchX() {
@@ -9181,8 +9281,8 @@ public final class UiWidgets {
 					indicatorWidth.snap(bounds[1]);
 					snapped = true;
 				}
-				indicatorX.update(UiTheme.get().speed(18.0F));
-				indicatorWidth.update(UiTheme.get().speed(18.0F));
+				indicatorX.update(deltaSeconds, UiTheme.get().speed(18.0F));
+				indicatorWidth.update(deltaSeconds, UiTheme.get().speed(18.0F));
 			}
 		}
 
@@ -9675,7 +9775,7 @@ public final class UiWidgets {
 			float before = scroll;
 			scroll = Anim.approach(scroll, targetScroll, UiTheme.get().speed(13.0F), deltaSeconds);
 			barOpacity.set(Math.abs(scroll - before) > 0.4F || isHovered(mouseX, mouseY) ? 1.0F : 0.0F);
-			barOpacity.update(UiTheme.get().speed(4.0F));
+			barOpacity.update(deltaSeconds, UiTheme.get().speed(4.0F));
 			for (int i = 0; i < items.size(); i++) {
 				UiComponent item = items.get(i);
 				float base = i < baseY.size() ? baseY.get(i) : 0.0F;
@@ -9819,7 +9919,7 @@ public final class UiWidgets {
 			UiTheme theme = UiTheme.get();
 			float focusAmount = box.isFocused() ? 1.0F : 0.0F;
 			focus.set(focusAmount);
-			focus.update(UiTheme.get().speed(14.0F));
+			focus.update(deltaSeconds, UiTheme.get().speed(14.0F));
 			float focusValue = focus.get();
 			float radius = Math.min(theme.radiusControl + 2.0F, height * 0.5F);
 			Render.roundedRect(graphics, x, y, width, height, radius,
@@ -10046,6 +10146,7 @@ public final class UiWindow {
 
 	private final Anim.Value appear = new Anim.Value(0.0F, 9.0F);
 	private final Anim.Value close = new Anim.Value(0.0F, 13.0F);
+	private final Anim.Value closeHover = new Anim.Value(0.0F, 16.0F);
 	private boolean closing;
 
 	public UiWindow(String key) {
@@ -10095,12 +10196,45 @@ public final class UiWindow {
 		return closing && Anim.clamp01(close.get()) > 0.98F;
 	}
 
-	public void update(float deltaSeconds) {
+	/** Advances the shell animations. The pointer drives the close button highlight. */
+	public void update(float deltaSeconds, float mouseX, float mouseY) {
 		appear.set(1.0F);
-		appear.update(UiTheme.get().speed(9.0F));
+		appear.update(deltaSeconds, UiTheme.get().speed(9.0F));
+		closeHover.set(!closing && isOverCloseButton(mouseX, mouseY) ? 1.0F : 0.0F);
+		closeHover.update(deltaSeconds, UiTheme.get().speed(16.0F));
 		if (closing) {
-			close.update(UiTheme.get().speed(13.0F));
+			close.update(deltaSeconds, UiTheme.get().speed(13.0F));
 		}
+	}
+
+	/** Hit box of the title bar close button. */
+	public boolean isOverCloseButton(float mouseX, float mouseY) {
+		float size = 22.0F;
+		float left = right() - size - 12.0F;
+		float top = y + (TITLE_HEIGHT - size) * 0.5F;
+		return mouseX >= left && mouseX <= left + size && mouseY >= top && mouseY <= top + size;
+	}
+
+	public float closeHover() {
+		return closeHover.get();
+	}
+
+	/** Round close button with an animated hover state; drawn above the header. */
+	public void renderCloseButton(GuiGraphics graphics, UiTheme theme, float alpha) {
+		if (alpha <= 0.01F) {
+			return;
+		}
+		float size = 22.0F;
+		float left = right() - size - 12.0F;
+		float top = y + (TITLE_HEIGHT - size) * 0.5F + slide();
+		float hover = closeHover.get();
+		Render.circle(graphics, left + size * 0.5F, top + size * 0.5F, size * 0.5F,
+				Render.alpha(theme.negative, (0.10F + 0.35F * hover) * alpha));
+		int color = Render.mix(theme.textDim, theme.negative, hover);
+		Render.line(graphics, left + 7.0F, top + 7.0F, left + size - 7.0F, top + size - 7.0F, 1.6F,
+				Render.alpha(color, alpha));
+		Render.line(graphics, left + size - 7.0F, top + 7.0F, left + 7.0F, top + size - 7.0F, 1.6F,
+				Render.alpha(color, alpha));
 	}
 
 	public void center(int screenWidth, int screenHeight) {
