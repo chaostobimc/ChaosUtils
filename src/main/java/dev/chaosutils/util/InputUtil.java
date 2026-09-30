@@ -29,7 +29,8 @@ public final class InputUtil {
 			};
 		}
 		try {
-			return InputConstants.Type.KEYSYM.getOrCreate(code).getDisplayName();
+			// 1.21.11: getDisplayName() returns a Component, so it is flattened to text here.
+			return InputConstants.Type.KEYSYM.getOrCreate(code).getDisplayName().getString();
 		} catch (Throwable ignored) {
 			return "Key " + code;
 		}
@@ -40,13 +41,14 @@ public final class InputUtil {
 			return false;
 		}
 		Minecraft client = Minecraft.getInstance();
-		long window = client.getWindow().handle();
 		try {
 			if (code <= -100) {
 				int button = -100 - code;
+				long window = client.getWindow().handle();
 				return org.lwjgl.glfw.GLFW.glfwGetMouseButton(window, button) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
 			}
-			return InputConstants.isKeyDown(window, code);
+			// 1.21.11: isKeyDown(Window, int) takes the Window object, not the GLFW handle.
+			return InputConstants.isKeyDown(client.getWindow(), code);
 		} catch (Throwable ignored) {
 			return false;
 		}

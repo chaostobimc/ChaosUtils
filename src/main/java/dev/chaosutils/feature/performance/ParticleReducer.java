@@ -77,7 +77,7 @@ public final class ParticleReducer implements Feature {
 		}
 	}
 
-	private static Setting<?> add(Setting<?> setting) {
+	private static <T extends Setting<?>> T add(T setting) {
 		return module.add(setting);
 	}
 

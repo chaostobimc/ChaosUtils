@@ -169,10 +169,11 @@ public final class ContainerSearch implements Feature {
 			return;
 		}
 
-		float pulse = pulse.get()
+		// Renamed so the local value cannot shadow the "pulse" setting of this module.
+		float pulseFactor = pulse.get()
 				? 0.65F + 0.35F * (float) Math.sin(System.nanoTime() / 400_000_000.0)
 				: 1.0F;
-		int highlight = Render.alpha(highlightColor.get(), Anim.clamp01(pulse));
+		int highlight = Render.alpha(highlightColor.get(), Anim.clamp01(pulseFactor));
 		int dim = (int) (Anim.clamp01(dimStrength.getFloat()) * 255.0F) << 24;
 
 		for (Slot slot : container.getMenu().slots) {
@@ -186,7 +187,7 @@ public final class ContainerSearch implements Feature {
 			boolean matches = matches(stack, needle);
 			if (matches) {
 				Render.roundedRect(graphics, slotX - 1.0F, slotY - 1.0F, 18.0F, 18.0F, 3.0F,
-						Render.alpha(highlightColor.get(), 0.25F * pulse));
+						Render.alpha(highlightColor.get(), 0.25F * pulseFactor));
 				Render.roundedBorder(graphics, slotX - 1.0F, slotY - 1.0F, 18.0F, 18.0F, 3.0F, 1.0F, highlight, 0x00000000);
 			} else if (dimNonMatches.get() && (!empty || highlightEmpty.get())) {
 				Render.rect(graphics, slotX, slotY, 16.0F, 16.0F, dim);

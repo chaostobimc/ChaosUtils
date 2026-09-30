@@ -96,6 +96,8 @@ and the Fabric API `1.21.11` branch. These are the exact signatures ChaosUtils u
 | --- | --- | --- |
 | `KeyMapping` | `isDown()`, `consumeClick()`, `Category.MISC`, `KeyMapping(String, InputConstants.Type, int, Category)` | every hotkey |
 | `GuiGraphics` | `guiWidth()`, `guiHeight()`, `drawString(Font, String, int, int, int, boolean)`, `drawCenteredString(Font, String, int, int, int)`, `enableScissor(int, int, int, int)`, `disableScissor()`, `renderItem(ItemStack, int, int)`, `renderItemDecorations(Font, ItemStack, int, int)`, `pose()` | all rendering |
+| GUI matrix stack | `GuiGraphics#pose()` returns `org.joml.Matrix3x2fStack` (2D!), so transforms use `pushMatrix()`/`popMatrix()` + `translate(float, float)`/`scale(float, float)` - **not** `pushPose()`/`popPose()` (that is the 3D `PoseStack`) | animating the click GUI and the radial ring |
+| `InputConstants` | `isKeyDown(Window, int)` (takes the window object, not the GLFW handle), `Key#getCreate`/`getOrCreate`, `Key#getDisplayName()` returns **`Component`** | key name labels, polled key state |
 | Input model (1.21.9+) | `MouseButtonEvent`, `KeyEvent`, `CharacterEvent`; `mouseClicked(MouseButtonEvent, boolean)`, `mouseReleased(MouseButtonEvent)`, `mouseDragged(MouseButtonEvent, double, double)`, `mouseScrolled(double, double, double, double)` | every ChaosUtils screen |
 | `ResourceKey` | `identifier()`, `registry()` - **not** `location()` | dimension names, enchantment ids |
 | `SoundInstance` | `getIdentifier()` - **not** `getLocation()`; `getSource()`, `getVolume()`, `getPitch()`, `getX()/getY()/getZ()`, `isRelative()` | sound radar, subtitles |

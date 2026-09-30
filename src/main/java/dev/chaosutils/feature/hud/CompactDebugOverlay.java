@@ -233,7 +233,6 @@ public final class CompactDebugOverlay implements Feature {
 			HudPanel.text(graphics, font, value, x + padding, cursorY, 0xFFF2F2F7);
 			cursorY += lineHeight;
 		}
-		builder.setLength(0);
 	}
 
 	private static String compass(float yaw) {

@@ -156,7 +156,7 @@ public abstract class ChaosScreen extends Screen {
 		float eased = Anim.easeOutCubic(openAnim.get());
 		float offsetY = (1.0F - eased) * 12.0F;
 
-		graphics.pose().pushPose();
+		graphics.pose().pushMatrix();
 		graphics.pose().translate(0.0F, offsetY);
 		for (UiComponent component : components) {
 			if (component.isVisible()) {
@@ -166,7 +166,7 @@ public abstract class ChaosScreen extends Screen {
 		if (popup != null) {
 			renderPopup(graphics, mouseX, mouseY);
 		}
-		graphics.pose().popPose();
+		graphics.pose().popMatrix();
 
 		renderTooltipLayer(graphics, mouseX, mouseY);
 		super.render(graphics, mouseX, mouseY, deltaTicks);

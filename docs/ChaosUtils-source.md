@@ -2411,7 +2411,8 @@ public final class InputUtil {
 			};
 		}
 		try {
-			return InputConstants.Type.KEYSYM.getOrCreate(code).getDisplayName();
+			// 1.21.11: getDisplayName() returns a Component, so it is flattened to text here.
+			return InputConstants.Type.KEYSYM.getOrCreate(code).getDisplayName().getString();
 		} catch (Throwable ignored) {
 			return "Key " + code;
 		}
@@ -2422,13 +2423,14 @@ public final class InputUtil {
 			return false;
 		}
 		Minecraft client = Minecraft.getInstance();
-		long window = client.getWindow().handle();
 		try {
 			if (code <= -100) {
 				int button = -100 - code;
+				long window = client.getWindow().handle();
 				return org.lwjgl.glfw.GLFW.glfwGetMouseButton(window, button) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
 			}
-			return InputConstants.isKeyDown(window, code);
+			// 1.21.11: isKeyDown(Window, int) takes the Window object, not the GLFW handle.
+			return InputConstants.isKeyDown(client.getWindow(), code);
 		} catch (Throwable ignored) {
 			return false;
 		}
@@ -4130,12 +4132,12 @@ public final class RadialMenuScreen extends Screen {
 		boolean hasIcon = RadialMenuFeature.showIcons() && !element.iconStack().isEmpty();
 		if (hasIcon) {
 			float scale = 0.8F + 0.2F * appearance + (hovered ? 0.15F : 0.0F);
-			graphics.pose().pushPose();
+			graphics.pose().pushMatrix();
 			graphics.pose().translate(x, y);
 			graphics.pose().scale(scale, scale);
 			graphics.pose().translate(-x, -y);
 			Render.item(graphics, element.iconStack(), x - 8.0F, y - 14.0F);
-			graphics.pose().popPose();
+			graphics.pose().popMatrix();
 		}
 		if (RadialMenuFeature.showLabels()) {
 			Font font = this.font;
@@ -4829,7 +4831,7 @@ public abstract class ChaosScreen extends Screen {
 		float eased = Anim.easeOutCubic(openAnim.get());
 		float offsetY = (1.0F - eased) * 12.0F;
 
-		graphics.pose().pushPose();
+		graphics.pose().pushMatrix();
 		graphics.pose().translate(0.0F, offsetY);
 		for (UiComponent component : components) {
 			if (component.isVisible()) {
@@ -4839,7 +4841,7 @@ public abstract class ChaosScreen extends Screen {
 		if (popup != null) {
 			renderPopup(graphics, mouseX, mouseY);
 		}
-		graphics.pose().popPose();
+		graphics.pose().popMatrix();
 
 		renderTooltipLayer(graphics, mouseX, mouseY);
 		super.render(graphics, mouseX, mouseY, deltaTicks);
@@ -7409,7 +7411,6 @@ public final class CompactDebugOverlay implements Feature {
 			HudPanel.text(graphics, font, value, x + padding, cursorY, 0xFFF2F2F7);
 			cursorY += lineHeight;
 		}
-		builder.setLength(0);
 	}
 
 	private static String compass(float yaw) {
@@ -9862,10 +9863,11 @@ public final class ContainerSearch implements Feature {
 			return;
 		}
 
-		float pulse = pulse.get()
+		// Renamed so the local value cannot shadow the "pulse" setting of this module.
+		float pulseFactor = pulse.get()
 				? 0.65F + 0.35F * (float) Math.sin(System.nanoTime() / 400_000_000.0)
 				: 1.0F;
-		int highlight = Render.alpha(highlightColor.get(), Anim.clamp01(pulse));
+		int highlight = Render.alpha(highlightColor.get(), Anim.clamp01(pulseFactor));
 		int dim = (int) (Anim.clamp01(dimStrength.getFloat()) * 255.0F) << 24;
 
 		for (Slot slot : container.getMenu().slots) {
@@ -9879,7 +9881,7 @@ public final class ContainerSearch implements Feature {
 			boolean matches = matches(stack, needle);
 			if (matches) {
 				Render.roundedRect(graphics, slotX - 1.0F, slotY - 1.0F, 18.0F, 18.0F, 3.0F,
-						Render.alpha(highlightColor.get(), 0.25F * pulse));
+						Render.alpha(highlightColor.get(), 0.25F * pulseFactor));
 				Render.roundedBorder(graphics, slotX - 1.0F, slotY - 1.0F, 18.0F, 18.0F, 3.0F, 1.0F, highlight, 0x00000000);
 			} else if (dimNonMatches.get() && (!empty || highlightEmpty.get())) {
 				Render.rect(graphics, slotX, slotY, 16.0F, 16.0F, dim);
@@ -11957,7 +11959,7 @@ public final class ParticleReducer implements Feature {
 		}
 	}
 
-	private static Setting<?> add(Setting<?> setting) {
+	private static <T extends Setting<?>> T add(T setting) {
 		return module.add(setting);
 	}
 

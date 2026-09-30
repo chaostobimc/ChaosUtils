@@ -210,12 +210,12 @@ public final class RadialMenuScreen extends Screen {
 		boolean hasIcon = RadialMenuFeature.showIcons() && !element.iconStack().isEmpty();
 		if (hasIcon) {
 			float scale = 0.8F + 0.2F * appearance + (hovered ? 0.15F : 0.0F);
-			graphics.pose().pushPose();
+			graphics.pose().pushMatrix();
 			graphics.pose().translate(x, y);
 			graphics.pose().scale(scale, scale);
 			graphics.pose().translate(-x, -y);
 			Render.item(graphics, element.iconStack(), x - 8.0F, y - 14.0F);
-			graphics.pose().popPose();
+			graphics.pose().popMatrix();
 		}
 		if (RadialMenuFeature.showLabels()) {
 			Font font = this.font;
