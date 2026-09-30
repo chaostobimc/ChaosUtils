@@ -182,6 +182,10 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Python helper tools
+__pycache__/
+*.pyc
 ```
 
 ### `src/main/resources/fabric.mod.json`
@@ -3475,8 +3479,9 @@ public final class Render {
 	 */
 	public static void boldText(GuiGraphics graphics, net.minecraft.client.gui.Font font, String value, float x, float y,
 			int color, boolean shadow) {
+		net.minecraft.client.gui.Font vanilla = net.minecraft.client.Minecraft.getInstance().font;
 		net.minecraft.client.gui.Font bold = dev.chaosutils.gui.UiFonts.bold();
-		if (bold == net.minecraft.client.Minecraft.getInstance().font) {
+		if (bold == vanilla || resolve(font, value) == vanilla) {
 			// no bundled semibold face - emulate the vanilla bold by drawing twice
 			text(graphics, font, value, x, y, color, shadow);
 			text(graphics, font, value, x + 0.7F, y, color, shadow);
@@ -5450,6 +5455,10 @@ public final class ChaosClickGui extends ChaosScreen {
 
 	/** Brand block: accent tile with the spark, name and version line. */
 	private static final class Brand extends UiComponent {
+		private Brand(float x, float y, float width) {
+			setBounds(x, y, width, 30.0F);
+		}
+
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
 			float alpha = alpha();
@@ -6049,8 +6058,14 @@ public abstract class ChaosScreen extends Screen {
 		}
 	}
 
-	/** Rebuilds the layout while keeping the window position and size. */
+	/**
+	 * Rebuilds the layout while keeping the window position and size.
+	 *
+	 * <p>The registered text fields are dropped first: a rebuild creates new ones, and a screen
+	 * that refreshes on every toggle would otherwise pile up dead widgets (and draw them).
+	 */
 	protected void refresh() {
+		clearInputs();
 		content.clear();
 		layoutX = window.x();
 		layoutY = window.y();
@@ -8314,20 +8329,30 @@ public final class UiFonts {
 		for (int index = 0; index < text.length(); ) {
 			int codePoint = text.codePointAt(index);
 			index += Character.charCount(codePoint);
-			if (codePoint <= LATIN_LIMIT) {
-				continue;
-			}
-			switch (codePoint) {
-				// punctuation the interface relies on, all of it present in the bundled face
-				case 0x2013, 0x2014, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2026, 0x20AC, 0x00D7, 0x2192, 0x2190,
-						0x25CF, 0x2714, 0x2716, 0x00B7 ->
-						continue;
-				default -> {
-					return false;
-				}
+			if (!covered(codePoint)) {
+				return false;
 			}
 		}
 		return true;
+	}
+
+	/**
+	 * Whether the bundled face has a glyph for the code point.
+	 *
+	 * <p>Everything up to Latin Extended-B is covered (including the German umlauts and the
+	 * punctuation the interface uses in its own labels), plus the handful of symbols listed below.
+	 * Anything else is handed to the vanilla font, which has the full Unicode range.
+	 */
+	private static boolean covered(int codePoint) {
+		if (codePoint <= LATIN_LIMIT) {
+			return true;
+		}
+		return switch (codePoint) {
+			// punctuation and symbols the interface uses on purpose
+			case 0x2013, 0x2014, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2026, 0x20AC, 0x00D7, 0x2192, 0x2190,
+					0x25CF, 0x2714, 0x2716, 0x00B7 -> true;
+			default -> false;
+		};
 	}
 
 	/** Builds the bundled fonts from the vanilla glyph provider. */

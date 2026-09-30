@@ -103,20 +103,30 @@ public final class UiFonts {
 		for (int index = 0; index < text.length(); ) {
 			int codePoint = text.codePointAt(index);
 			index += Character.charCount(codePoint);
-			if (codePoint <= LATIN_LIMIT) {
-				continue;
-			}
-			switch (codePoint) {
-				// punctuation the interface relies on, all of it present in the bundled face
-				case 0x2013, 0x2014, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2026, 0x20AC, 0x00D7, 0x2192, 0x2190,
-						0x25CF, 0x2714, 0x2716, 0x00B7 ->
-						continue;
-				default -> {
-					return false;
-				}
+			if (!covered(codePoint)) {
+				return false;
 			}
 		}
 		return true;
+	}
+
+	/**
+	 * Whether the bundled face has a glyph for the code point.
+	 *
+	 * <p>Everything up to Latin Extended-B is covered (including the German umlauts and the
+	 * punctuation the interface uses in its own labels), plus the handful of symbols listed below.
+	 * Anything else is handed to the vanilla font, which has the full Unicode range.
+	 */
+	private static boolean covered(int codePoint) {
+		if (codePoint <= LATIN_LIMIT) {
+			return true;
+		}
+		return switch (codePoint) {
+			// punctuation and symbols the interface uses on purpose
+			case 0x2013, 0x2014, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2026, 0x20AC, 0x00D7, 0x2192, 0x2190,
+					0x25CF, 0x2714, 0x2716, 0x00B7 -> true;
+			default -> false;
+		};
 	}
 
 	/** Builds the bundled fonts from the vanilla glyph provider. */

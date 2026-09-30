@@ -44,6 +44,37 @@ def text_of(node, source):
     return source[node.start_byte:node.end_byte].decode("utf-8", "replace")
 
 
+def declared_constructors(tree, source):
+    """class name -> set of constructor arities, or None when the class has no explicit one."""
+    found = defaultdict(set)
+    records = set()
+
+    def visit(node):
+        if node.type in ("class_declaration", "record_declaration", "enum_declaration"):
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                name = text_of(name_node, source)
+                found.setdefault(name, set())      # declared here - so it is one of ours
+                if node.type == "record_declaration":
+                    records.add(name)
+                    params = node.child_by_field_name("parameters")
+                    found[name].add(len(params.named_children) if params is not None else 0)
+                body = node.child_by_field_name("body")
+                if body is not None:
+                    for child in body.named_children:
+                        if child.type == "constructor_declaration":
+                            params = child.child_by_field_name("parameters")
+                            count = len(params.named_children) if params is not None else 0
+                            varargs = params is not None and any(
+                                "..." in text_of(p, source) for p in params.named_children)
+                            found[name].add(-1 if varargs else count)
+        for child in node.children:
+            visit(child)
+
+    visit(tree.root_node)
+    return found
+
+
 def declared_arities(tree, source):
     """method name -> set of parameter counts (-1 marks a varargs method)."""
     found = defaultdict(set)
@@ -75,11 +106,22 @@ def main():
         parsed[path] = (PARSER.parse(source), source)
 
     arities = defaultdict(set)
+    constructors = defaultdict(set)
+    has_class = defaultdict(bool)
     for path, (tree, source) in parsed.items():
         simple = os.path.basename(path)[:-5]
         if simple in TARGETS:
             for name, counts in declared_arities(tree, source).items():
                 arities[name] |= counts
+        for name, counts in declared_constructors(tree, source).items():
+            constructors[name] |= counts
+            has_class[name] = True
+
+    def ctor_ok(name, count):
+        if not has_class[name]:
+            return True            # not one of our classes (a library type)
+        allowed = constructors[name] or {0}
+        return -1 in allowed or count in allowed
 
     problems = []
     for path, (tree, source) in parsed.items():
@@ -101,6 +143,20 @@ def main():
                             problems.append(f"{os.path.relpath(path, ROOT)}:{line} "
                                             f"{owner}.{name} called with {actual} argument(s), "
                                             f"declared with {sorted(expected)}")
+            if node.type == "object_creation_expression":
+                type_node = node.child_by_field_name("type")
+                args = node.child_by_field_name("arguments")
+                if type_node is not None and args is not None:
+                    name = text_of(type_node, source)
+                    if name.endswith("[]"):
+                        pass
+                    elif "(" in name or "." in name and name.rsplit(".", 1)[1][:1].islower():
+                        pass
+                    elif not ctor_ok(name, len(args.named_children)):
+                        line = node.start_point[0] + 1
+                        problems.append(f"{os.path.relpath(path, ROOT)}:{line} new {name}(...) with "
+                                        f"{len(args.named_children)} argument(s), declared with "
+                                        f"{sorted(constructors[name])} (and no default constructor)")
             for child in node.children:
                 visit(child)
 

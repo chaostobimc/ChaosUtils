@@ -418,6 +418,10 @@ public final class ChaosClickGui extends ChaosScreen {
 
 	/** Brand block: accent tile with the spark, name and version line. */
 	private static final class Brand extends UiComponent {
+		private Brand(float x, float y, float width) {
+			setBounds(x, y, width, 30.0F);
+		}
+
 		@Override
 		public void render(GuiGraphics graphics, float mouseX, float mouseY, float deltaSeconds) {
 			float alpha = alpha();

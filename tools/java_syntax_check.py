@@ -9,6 +9,7 @@ Usage:  python3 tools/java_syntax_check.py [--all | --changed]
 """
 
 import os
+import re
 import subprocess
 import sys
 
@@ -50,6 +51,36 @@ def walk(node, source: bytes, problems: list[str], path: str) -> None:
         walk(child, source, problems, path)
 
 
+def arrow_jump_statements(path: str, text: str) -> list[str]:
+    """Finds ``case X -> continue;`` style rules.
+
+    A switch rule may only be an expression, a block or a ``throw`` statement. A jump statement
+    (``continue``, ``break``, ``return``) has to be wrapped in braces - and because that mistake
+    is a javac error, not a style question, it is checked here.
+    """
+    problems = []
+    lines = text.split("\n")
+    inline = re.compile(r"->[ \t]*(continue|break|return)\b")
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("//") or stripped.startswith("*") or stripped.startswith("/*"):
+            continue
+        if inline.search(line):
+            problems.append(f"{os.path.relpath(path, ROOT)}:{index + 1} switch rule body is a "
+                            f"jump statement - wrap it in {{ }}")
+            continue
+        if stripped.endswith("->"):
+            for look in range(index + 1, min(index + 3, len(lines))):
+                following = lines[look].strip()
+                if not following or following.startswith("//"):
+                    continue
+                if re.match(r"(continue|break|return)\b", following):
+                    problems.append(f"{os.path.relpath(path, ROOT)}:{look + 1} switch rule body is a "
+                                    f"jump statement - wrap it in {{ }}")
+                break
+    return problems
+
+
 def main() -> int:
     files = targets()
     problems: list[str] = []
@@ -59,6 +90,7 @@ def main() -> int:
         source = open(path, "rb").read()
         tree = PARSER.parse(source)
         walk(tree.root_node, source, problems, path)
+        problems.extend(arrow_jump_statements(path, source.decode("utf-8", "replace")))
     for problem in problems:
         print(problem)
     print(f"{len(files)} files parsed, {len(problems)} syntax problem(s)")
