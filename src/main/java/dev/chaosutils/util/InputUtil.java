@@ -1,0 +1,122 @@
+package dev.chaosutils.util;
+
+import com.mojang.blaze3d.platform.InputConstants;
+
+import net.minecraft.client.Minecraft;
+
+/**
+ * Small helpers around GLFW key codes. Everything here is read-only input polling -
+ * ChaosUtils never injects synthetic input events.
+ */
+public final class InputUtil {
+	public static final int NO_KEY = -1;
+
+	private InputUtil() {
+	}
+
+	public static String keyName(int code) {
+		if (code == NO_KEY) {
+			return "None";
+		}
+		if (code <= -100) {
+			// Mouse buttons are stored as -100 - button so they can share the numeric field.
+			int button = -100 - code;
+			return switch (button) {
+				case 0 -> "Mouse Left";
+				case 1 -> "Mouse Right";
+				case 2 -> "Mouse Middle";
+				default -> "Mouse " + (button + 1);
+			};
+		}
+		try {
+			// 1.21.11: getDisplayName() returns a Component, so it is flattened to text here.
+			return InputConstants.Type.KEYSYM.getOrCreate(code).getDisplayName().getString();
+		} catch (Throwable ignored) {
+			return "Key " + code;
+		}
+	}
+
+	public static boolean isPressed(int code) {
+		if (code == NO_KEY) {
+			return false;
+		}
+		Minecraft client = Minecraft.getInstance();
+		try {
+			if (code <= -100) {
+				int button = -100 - code;
+				long window = client.getWindow().handle();
+				return org.lwjgl.glfw.GLFW.glfwGetMouseButton(window, button) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+			}
+			// 1.21.11: isKeyDown(Window, int) takes the Window object, not the GLFW handle.
+			return InputConstants.isKeyDown(client.getWindow(), code);
+		} catch (Throwable ignored) {
+			return false;
+		}
+	}
+
+	/**
+	 * Whether the physical key of a key binding is held right now.
+	 *
+	 * <p>{@code KeyMapping#isDown()} is not usable inside a screen: opening one makes the game call
+	 * {@code KeyMapping.releaseAll()} and, from then on, the keyboard handler stops feeding key
+	 * states to key bindings. GLFW is the only source that still knows the truth, so the mapping's
+	 * key is read through a mixin accessor and polled directly.
+	 */
+	public static boolean isPhysicallyDown(net.minecraft.client.KeyMapping mapping) {
+		if (mapping == null) {
+			return false;
+		}
+		try {
+			com.mojang.blaze3d.platform.InputConstants.Key key =
+					((dev.chaosutils.mixin.KeyMappingAccessor) (Object) mapping).chaosutils$key();
+			if (key == null || key == com.mojang.blaze3d.platform.InputConstants.UNKNOWN) {
+				return false;
+			}
+			long window = Minecraft.getInstance().getWindow().handle();
+			if (key.getType() == com.mojang.blaze3d.platform.InputConstants.Type.MOUSE) {
+				return org.lwjgl.glfw.GLFW.glfwGetMouseButton(window, key.getValue()) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+			}
+			return com.mojang.blaze3d.platform.InputConstants.isKeyDown(Minecraft.getInstance().getWindow(), key.getValue());
+		} catch (Throwable ignored) {
+			// If the accessor or the window is unavailable, fall back to the vanilla state.
+			return mapping.isDown();
+		}
+	}
+
+	public static int mouseButtonToCode(int button) {
+		return -100 - button;
+	}
+
+	/**
+	 * First input that is currently held down, or {@link #NO_KEY}.
+	 * Polling GLFW directly is what makes the "press a key to bind" widgets work without
+	 * depending on the 1.21.9+ input event record accessors.
+	 */
+	public static int currentlyHeld() {
+		long window = Minecraft.getInstance().getWindow().handle();
+		try {
+			for (int button = 0; button < 8; button++) {
+				if (org.lwjgl.glfw.GLFW.glfwGetMouseButton(window, button) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
+					return mouseButtonToCode(button);
+				}
+			}
+			for (int key = 32; key <= 348; key++) {
+				if (org.lwjgl.glfw.GLFW.glfwGetKey(window, key) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
+					return key;
+				}
+			}
+		} catch (Throwable ignored) {
+			return NO_KEY;
+		}
+		return NO_KEY;
+	}
+
+	/** Returns an input that is held now but was not reported as the previously held input. */
+	public static int pollNewInput(int previouslyHeld) {
+		int held = currentlyHeld();
+		if (held == NO_KEY || held == previouslyHeld) {
+			return NO_KEY;
+		}
+		return held;
+	}
+}

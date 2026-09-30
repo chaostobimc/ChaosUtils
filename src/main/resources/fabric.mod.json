@@ -1,0 +1,38 @@
+{
+	"schemaVersion": 1,
+	"id": "chaosutils",
+	"version": "${version}",
+	"name": "ChaosUtils",
+	"description": "A large, fully client-side QoL and visual utility suite: an interactive radial menu, animated click GUI, HUD overlays, chat tools and audio helpers. No cheats, no automation, no packet spam.",
+	"authors": [
+		"ChaosUtils"
+	],
+	"contact": {
+		"homepage": "https://github.com/chaostobimc/ChaosUtils",
+		"sources": "https://github.com/chaostobimc/ChaosUtils",
+		"issues": "https://github.com/chaostobimc/ChaosUtils/issues"
+	},
+	"license": "MIT",
+	"icon": "assets/chaosutils/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"dev.chaosutils.ChaosUtils"
+		]
+	},
+	"mixins": [
+		{
+			"config": "chaosutils.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.5",
+		"fabric-api": "*",
+		"minecraft": "~1.21.11",
+		"java": ">=21"
+	},
+	"suggests": {
+		"modmenu": "*"
+	}
+}

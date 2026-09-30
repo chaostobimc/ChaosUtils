@@ -1,0 +1,23 @@
+{
+	"required": true,
+	"minVersion": "0.8",
+	"package": "dev.chaosutils.mixin",
+	"compatibilityLevel": "JAVA_21",
+	"injectors": {
+		"defaultRequire": 1
+	},
+	"client": [
+		"AbstractContainerScreenAccessor",
+		"AbstractContainerScreenMixin",
+		"CameraAccessor",
+		"CameraMixin",
+		"DebugScreenOverlayMixin",
+		"EntityMixin",
+		"GameRendererMixin",
+		"GuiMixin",
+		"KeyMappingAccessor",
+		"MouseHandlerMixin",
+		"ParticleEngineMixin",
+		"SoundEngineMixin"
+	]
+}
