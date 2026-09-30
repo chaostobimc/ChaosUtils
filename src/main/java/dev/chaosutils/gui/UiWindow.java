@@ -127,6 +127,11 @@ public final class UiWindow {
 		return y + height;
 	}
 
+	/** Left edge of the content area in window local coordinates (the body spans the full width). */
+	public float bodyX() {
+		return 0.0F;
+	}
+
 	/** Top of the content area, in window local coordinates. */
 	public float bodyY() {
 		return TITLE_HEIGHT;

@@ -363,7 +363,7 @@ public abstract class ChaosScreen extends Screen {
 		Backdrop.render(graphics, this, theme());
 
 		// ------- window and content
-		window.update(deltaSeconds, mouseX, mouseY);
+		window.update(deltaSeconds);
 		offsetX = window.x() - layoutX;
 		offsetY = window.y() - layoutY;
 		float windowAlpha = alpha();

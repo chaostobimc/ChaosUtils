@@ -137,10 +137,20 @@ public final class UiModals {
 	// ================================================================= dialog
 
 	/** Question with up to three answers. */
+	/** Confirmation dialog with a destructive primary action. */
+	public static Dialog confirm(String title, String message, String confirmLabel, Runnable onConfirm) {
+		return Dialog.confirm(title, message, confirmLabel, onConfirm);
+	}
+
+	/** Plain information dialog with a single dismiss button. */
+	public static Dialog info(String title, String message) {
+		return Dialog.info(title, message);
+	}
+
 	public static final class Dialog extends Modal {
 		private final String title;
 		private final List<String> lines;
-		private final List<Button> buttons = new ArrayList<>();
+		private final List<UiWidgets.Button> buttons = new ArrayList<>();
 
 		public Dialog(String title, List<String> lines) {
 			this.title = title;
@@ -166,7 +176,7 @@ public final class UiModals {
 		}
 
 		public Dialog add(String label, Integer color, Consumer<Dialog> action) {
-			Button button = new Button(label, color == null ? Button.Variant.GHOST : Button.Variant.SOFT,
+			UiWidgets.Button button = new UiWidgets.Button(label, color == null ? UiWidgets.Button.Variant.GHOST : UiWidgets.Button.Variant.SOFT,
 					color == null ? UiTheme.get().accent : color, () -> action.accept(this));
 			buttons.add(button);
 			return this;
@@ -180,7 +190,7 @@ public final class UiModals {
 			float startX = x + (width - total) * 0.5F;
 			float buttonY = y + height - 34.0F;
 			for (int i = 0; i < buttons.size(); i++) {
-				Button button = buttons.get(i);
+				UiWidgets.Button button = buttons.get(i);
 				button.setBounds(startX + i * (buttonWidth + 8.0F), buttonY, buttonWidth, 22.0F);
 				button.setLayerAlpha(presence());
 				button.update(deltaSeconds, mouseX, mouseY);
@@ -208,7 +218,7 @@ public final class UiModals {
 					cursor += 11.0F;
 				}
 			}
-			for (Button button : buttons) {
+			for (UiWidgets.Button button : buttons) {
 				button.render(graphics, mouseX, mouseY, deltaSeconds);
 			}
 			graphics.pose().popMatrix();
@@ -225,7 +235,7 @@ public final class UiModals {
 		@Override
 		public boolean mouseReleased(float mouseX, float mouseY, int button) {
 			boolean handled = false;
-			for (Button entry : buttons) {
+			for (UiWidgets.Button entry : buttons) {
 				handled |= entry.mouseReleased(mouseX, mouseY, button);
 			}
 			return handled;

@@ -2977,6 +2977,11 @@ public final class Render {
 
 	// ------------------------------------------------------------------ colors
 
+	/** Local clamp used by the alpha/fade helpers below. */
+	private static float clamp01(float value) {
+		return value < 0.0F ? 0.0F : (value > 1.0F ? 1.0F : value);
+	}
+
 	public static int rgba(int r, int g, int b, int a) {
 		return (a & 0xFF) << 24 | (r & 0xFF) << 16 | (g & 0xFF) << 8 | (b & 0xFF);
 	}
@@ -5935,7 +5940,7 @@ public abstract class ChaosScreen extends Screen {
 		Backdrop.render(graphics, this, theme());
 
 		// ------- window and content
-		window.update(deltaSeconds, mouseX, mouseY);
+		window.update(deltaSeconds);
 		offsetX = window.x() - layoutX;
 		offsetY = window.y() - layoutY;
 		float windowAlpha = alpha();
@@ -6511,9 +6516,9 @@ public final class ChaosScreens {
 			add(add);
 
 			UiWidgets.Button duplicate = new UiWidgets.Button("Duplicate", UiWidgets.Button.Variant.SOFT, theme.accent, () -> {
-				RadialElement element = current();
-				if (element != null) {
-					ChaosConfig.RADIAL_ELEMENTS.add(element.copy());
+				RadialElement slice = current();
+				if (slice != null) {
+					ChaosConfig.RADIAL_ELEMENTS.add(slice.copy());
 					ChaosConfig.markDirty();
 					selected = ChaosConfig.RADIAL_ELEMENTS.size() - 1;
 					refresh();
@@ -6523,10 +6528,10 @@ public final class ChaosScreens {
 			add(duplicate);
 
 			UiWidgets.Button delete = new UiWidgets.Button("Delete", UiWidgets.Button.Variant.DANGER, theme.negative, () -> {
-				RadialElement element = current();
-				if (element != null) {
-					openConfirm("Delete slice", "Remove \"" + element.name + "\" from the radial menu?", "Delete", () -> {
-						ChaosConfig.RADIAL_ELEMENTS.remove(element);
+				RadialElement slice = current();
+				if (slice != null) {
+					openConfirm("Delete slice", "Remove \"" + slice.name + "\" from the radial menu?", "Delete", () -> {
+						ChaosConfig.RADIAL_ELEMENTS.remove(slice);
 						ChaosConfig.markDirty();
 						selected = Math.max(0, Math.min(selected, ChaosConfig.RADIAL_ELEMENTS.size() - 1));
 						refresh();
@@ -6582,14 +6587,6 @@ public final class ChaosScreens {
 			selected = target;
 			ChaosConfig.markDirty();
 			refresh();
-		}
-
-		private static String keyName(net.minecraft.client.KeyMapping mapping) {
-			try {
-				return mapping.getTranslatedKeyMessage().getString();
-			} catch (Throwable ignored) {
-				return "the radial key";
-			}
 		}
 
 		/** One row in the slice list: colour dot, name, action type and reorder buttons. */
@@ -8022,10 +8019,20 @@ public final class UiModals {
 	// ================================================================= dialog
 
 	/** Question with up to three answers. */
+	/** Confirmation dialog with a destructive primary action. */
+	public static Dialog confirm(String title, String message, String confirmLabel, Runnable onConfirm) {
+		return Dialog.confirm(title, message, confirmLabel, onConfirm);
+	}
+
+	/** Plain information dialog with a single dismiss button. */
+	public static Dialog info(String title, String message) {
+		return Dialog.info(title, message);
+	}
+
 	public static final class Dialog extends Modal {
 		private final String title;
 		private final List<String> lines;
-		private final List<Button> buttons = new ArrayList<>();
+		private final List<UiWidgets.Button> buttons = new ArrayList<>();
 
 		public Dialog(String title, List<String> lines) {
 			this.title = title;
@@ -8051,7 +8058,7 @@ public final class UiModals {
 		}
 
 		public Dialog add(String label, Integer color, Consumer<Dialog> action) {
-			Button button = new Button(label, color == null ? Button.Variant.GHOST : Button.Variant.SOFT,
+			UiWidgets.Button button = new UiWidgets.Button(label, color == null ? UiWidgets.Button.Variant.GHOST : UiWidgets.Button.Variant.SOFT,
 					color == null ? UiTheme.get().accent : color, () -> action.accept(this));
 			buttons.add(button);
 			return this;
@@ -8065,7 +8072,7 @@ public final class UiModals {
 			float startX = x + (width - total) * 0.5F;
 			float buttonY = y + height - 34.0F;
 			for (int i = 0; i < buttons.size(); i++) {
-				Button button = buttons.get(i);
+				UiWidgets.Button button = buttons.get(i);
 				button.setBounds(startX + i * (buttonWidth + 8.0F), buttonY, buttonWidth, 22.0F);
 				button.setLayerAlpha(presence());
 				button.update(deltaSeconds, mouseX, mouseY);
@@ -8093,7 +8100,7 @@ public final class UiModals {
 					cursor += 11.0F;
 				}
 			}
-			for (Button button : buttons) {
+			for (UiWidgets.Button button : buttons) {
 				button.render(graphics, mouseX, mouseY, deltaSeconds);
 			}
 			graphics.pose().popMatrix();
@@ -8110,7 +8117,7 @@ public final class UiModals {
 		@Override
 		public boolean mouseReleased(float mouseX, float mouseY, int button) {
 			boolean handled = false;
-			for (Button entry : buttons) {
+			for (UiWidgets.Button entry : buttons) {
 				handled |= entry.mouseReleased(mouseX, mouseY, button);
 			}
 			return handled;
@@ -9933,7 +9940,7 @@ public final class UiWidgets {
 
 	/** Thin progress/status element used by the footer and by list screens. */
 	public static final class StatusChip extends UiComponent {
-		private final String text;
+		private String text;
 		private int color;
 		private boolean pulsing;
 
@@ -10125,6 +10132,11 @@ public final class UiWindow {
 
 	public float bottom() {
 		return y + height;
+	}
+
+	/** Left edge of the content area in window local coordinates (the body spans the full width). */
+	public float bodyX() {
+		return 0.0F;
 	}
 
 	/** Top of the content area, in window local coordinates. */

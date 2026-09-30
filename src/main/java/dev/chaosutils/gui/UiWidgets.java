@@ -1216,7 +1216,7 @@ public final class UiWidgets {
 
 	/** Thin progress/status element used by the footer and by list screens. */
 	public static final class StatusChip extends UiComponent {
-		private final String text;
+		private String text;
 		private int color;
 		private boolean pulsing;
 

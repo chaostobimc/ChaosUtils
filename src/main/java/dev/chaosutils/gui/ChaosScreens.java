@@ -176,9 +176,9 @@ public final class ChaosScreens {
 			add(add);
 
 			UiWidgets.Button duplicate = new UiWidgets.Button("Duplicate", UiWidgets.Button.Variant.SOFT, theme.accent, () -> {
-				RadialElement element = current();
-				if (element != null) {
-					ChaosConfig.RADIAL_ELEMENTS.add(element.copy());
+				RadialElement slice = current();
+				if (slice != null) {
+					ChaosConfig.RADIAL_ELEMENTS.add(slice.copy());
 					ChaosConfig.markDirty();
 					selected = ChaosConfig.RADIAL_ELEMENTS.size() - 1;
 					refresh();
@@ -188,10 +188,10 @@ public final class ChaosScreens {
 			add(duplicate);
 
 			UiWidgets.Button delete = new UiWidgets.Button("Delete", UiWidgets.Button.Variant.DANGER, theme.negative, () -> {
-				RadialElement element = current();
-				if (element != null) {
-					openConfirm("Delete slice", "Remove \"" + element.name + "\" from the radial menu?", "Delete", () -> {
-						ChaosConfig.RADIAL_ELEMENTS.remove(element);
+				RadialElement slice = current();
+				if (slice != null) {
+					openConfirm("Delete slice", "Remove \"" + slice.name + "\" from the radial menu?", "Delete", () -> {
+						ChaosConfig.RADIAL_ELEMENTS.remove(slice);
 						ChaosConfig.markDirty();
 						selected = Math.max(0, Math.min(selected, ChaosConfig.RADIAL_ELEMENTS.size() - 1));
 						refresh();
@@ -247,14 +247,6 @@ public final class ChaosScreens {
 			selected = target;
 			ChaosConfig.markDirty();
 			refresh();
-		}
-
-		private static String keyName(net.minecraft.client.KeyMapping mapping) {
-			try {
-				return mapping.getTranslatedKeyMessage().getString();
-			} catch (Throwable ignored) {
-				return "the radial key";
-			}
 		}
 
 		/** One row in the slice list: colour dot, name, action type and reorder buttons. */

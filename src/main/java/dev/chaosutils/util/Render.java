@@ -16,6 +16,11 @@ public final class Render {
 
 	// ------------------------------------------------------------------ colors
 
+	/** Local clamp used by the alpha/fade helpers below. */
+	private static float clamp01(float value) {
+		return value < 0.0F ? 0.0F : (value > 1.0F ? 1.0F : value);
+	}
+
 	public static int rgba(int r, int g, int b, int a) {
 		return (a & 0xFF) << 24 | (r & 0xFF) << 16 | (g & 0xFF) << 8 | (b & 0xFF);
 	}
